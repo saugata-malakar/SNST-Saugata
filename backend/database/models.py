@@ -204,7 +204,7 @@ class AshaPatientAssignment(Base):
     patient = relationship("Patient", back_populates="assignments_asha")
     
     __table_args__ = (
-        Index("idx_asha_assignment", ("asha_worker_id", "patient_id")),
+        Index("idx_asha_assignment", "asha_worker_id", "patient_id"),
     )
 
 
@@ -383,7 +383,7 @@ class AuditLog(Base):
     table_name = Column(String(100), nullable=False)  # Non-sensitive - retain
     record_id = Column(UUID(as_uuid=True), nullable=False)  # Direct ID - pseudonymise
     timestamp = Column(DateTime, default=datetime.utcnow)  # Non-sensitive - retain
-    metadata = Column(JSON, nullable=True)  # Non-sensitive - retain
+    meta_data = Column(JSON, nullable=True)  # Non-sensitive - retain (renamed from metadata)
     
     __table_args__ = (
         Index("idx_audit_timestamp", "timestamp"),

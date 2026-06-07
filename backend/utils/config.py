@@ -56,6 +56,12 @@ class Settings(BaseSettings):
     MAX_UPLOAD_SIZE_MB: int = 50  # Max image size
     UPLOAD_DIR: str = "./uploads"  # Relative to project root
     
+    # ML Model Paths
+    WOUND_MODEL_PATH: str = "./models/wound_severity_best.pth"
+    SKIN_MODEL_PATH: str = "./models/skin_classifier_best.pth"
+    EYE_MODEL_PATH: str = "./models/eye_model_best.pth"
+    INFERENCE_DEVICE: str = "cpu"  # "cpu" or "cuda"
+    
     # Feature Flags
     ENABLE_INFERENCE: bool = True
     ENABLE_ANONYMISATION: bool = True

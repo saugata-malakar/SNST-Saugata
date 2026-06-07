@@ -17,10 +17,16 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime
 import logging
 import json
+from sqlalchemy.orm import Session
 
 from backend.database.privacy import (
     AnonymisationEngine,
     get_anonymisation_engine,
+)
+from backend.database.session import get_db
+from backend.database.models import (
+    Patient, MonitoringSession, AIResult, WoundSite,
+    Consent, ASHAWorker, AuditLog
 )
 
 logger = logging.getLogger(__name__)
@@ -78,8 +84,8 @@ class ExportRejectionResponse(BaseModel):
 @router.post("/export", response_model=ExportResponse)
 async def export_data(
     query: ExportFilterQuery,
-    db_session = Depends(),  # Inject DB session from FastAPI
-    current_user = Depends(),  # Inject authenticated user
+    db_session: Session = Depends(get_db),
+    # current_user = Depends(),  # TODO: Add authentication middleware
 ) -> ExportResponse:
     """
     Export anonymised data from a table.
@@ -94,7 +100,7 @@ async def export_data(
     Args:
         query: Export filter parameters
         db_session: Database session
-        current_user: Authenticated user
+        current_user: Authenticated user (TODO: implement auth)
     
     Returns:
         Anonymised dataset with k-anonymity verification
@@ -106,32 +112,67 @@ async def export_data(
     """
     
     # Validate table name (prevent SQL injection)
-    ALLOWED_TABLES = [
-        "patients", "monitoring_sessions", "ai_results",
-        "wound_sites", "consents", "asha_workers",
-    ]
+    TABLE_MODEL_MAP = {
+        "patients": Patient,
+        "monitoring_sessions": MonitoringSession,
+        "ai_results": AIResult,
+        "wound_sites": WoundSite,
+        "consents": Consent,
+        "asha_workers": ASHAWorker,
+    }
     
-    if query.table not in ALLOWED_TABLES:
+    if query.table not in TABLE_MODEL_MAP:
         raise HTTPException(
             status_code=404,
             detail=f"Table '{query.table}' not found or not exportable"
         )
     
-    # Fetch records (pseudo-code)
-    # records = db_session.query(...).filter(
-    #     (District == query.district if query.district else True) &
-    #     (Age >= query.age_min if query.age_min else True) &
-    #     (Age <= query.age_max if query.age_max else True) &
-    #     ...
-    # ).all()
+    # Get the SQLAlchemy model
+    model_class = TABLE_MODEL_MAP[query.table]
     
-    records = []  # TODO: Implement query
+    # Build query
+    db_query = db_session.query(model_class)
     
-    if not records:
+    # Apply filters based on table type
+    if query.table == "patients":
+        if query.district:
+            db_query = db_query.filter(Patient.district == query.district)
+        if query.age_min:
+            db_query = db_query.filter(Patient.age >= query.age_min)
+        if query.age_max:
+            db_query = db_query.filter(Patient.age <= query.age_max)
+    
+    elif query.table == "monitoring_sessions":
+        if query.start_date:
+            db_query = db_query.filter(MonitoringSession.session_date >= query.start_date)
+        if query.end_date:
+            db_query = db_query.filter(MonitoringSession.session_date <= query.end_date)
+    
+    elif query.table == "wound_sites":
+        if query.district:
+            # Join with patient to filter by district
+            db_query = db_query.join(Patient).filter(Patient.district == query.district)
+    
+    # Execute query
+    records_orm = db_query.all()
+    
+    if not records_orm:
         raise HTTPException(
             status_code=400,
             detail="No records found matching filter criteria"
         )
+    
+    # Convert ORM objects to dictionaries
+    records = []
+    for record in records_orm:
+        record_dict = {}
+        for column in record.__table__.columns:
+            value = getattr(record, column.name)
+            # Convert datetime to ISO string
+            if isinstance(value, datetime):
+                value = value.isoformat()
+            record_dict[column.name] = value
+        records.append(record_dict)
     
     # Anonymise
     engine = get_anonymisation_engine()
@@ -140,11 +181,11 @@ async def export_data(
     # Define quasi-identifiers for k-anonymity check
     quasi_identifiers_map = {
         "patients": ["district", "age", "gender"],
-        "monitoring_sessions": ["district", "age_band"],  # Would need age_band field
+        "monitoring_sessions": ["district"],
         "wound_sites": ["district"],
         "asha_workers": ["district"],
         "consents": ["district"],
-        "ai_results": ["district"],  # Inherited from session
+        "ai_results": ["district"],
     }
     
     quasi_ids = quasi_identifiers_map.get(query.table, ["district"])
@@ -181,11 +222,12 @@ async def export_data(
     
     # Log export event
     export_id = _generate_export_id()
+    current_user_id = "system"  # TODO: Get from authenticated user
     _log_export_event(
         db_session,
         export_id=export_id,
         table=query.table,
-        user_id=current_user.id,
+        user_id=current_user_id,
         row_count=len(anonymised_records),
         k_anonymity_verified=True,
     )
@@ -197,7 +239,7 @@ async def export_data(
         record_count=len(anonymised_records),
         k_anonymity=k_anon_response,
         exported_at=datetime.utcnow().isoformat(),
-        exported_by=current_user.id,
+        exported_by=current_user_id,
         data=anonymised_records,
         warning=(
             "Data has been anonymised and verified for k-anonymity (k ≥ 5). "
@@ -255,8 +297,8 @@ async def get_export_schema(table: str) -> Dict[str, Any]:
 @router.post("/export/dry-run")
 async def dry_run_export(
     query: ExportFilterQuery,
-    db_session = Depends(),
-    current_user = Depends(),
+    db_session: Session = Depends(get_db),
+    # current_user = Depends(),  # TODO: Add authentication
 ) -> Dict[str, Any]:
     """
     Dry-run export: validate without returning data.
@@ -304,7 +346,7 @@ def _generate_export_id() -> str:
 
 
 def _log_export_event(
-    db_session,
+    db_session: Session,
     export_id: str,
     table: str,
     user_id: str,
@@ -324,21 +366,21 @@ def _log_export_event(
     """
     from datetime import datetime
     
-    log_entry = {
-        "log_id": _generate_export_id(),
-        "user_id": user_id,
-        "action": "data_export",
-        "table_name": table,
-        "record_id": export_id,
-        "timestamp": datetime.utcnow().isoformat(),
-        "metadata": json.dumps({
+    log_entry = AuditLog(
+        log_id=_generate_export_id(),
+        user_id=user_id,
+        action="data_export",
+        table_name=table,
+        record_id=export_id,
+        timestamp=datetime.utcnow(),
+        meta_data=json.dumps({
             "row_count": row_count,
             "k_anonymity_verified": k_anonymity_verified,
         })
-    }
+    )
     
-    # db_session.add(AuditLog(**log_entry))
-    # db_session.commit()
+    db_session.add(log_entry)
+    db_session.commit()
     
     logger.info(f"Export logged: {export_id} | {table} | {row_count} rows")
 

@@ -227,19 +227,89 @@ class ErasurePipeline:
             Count of rows deleted
         """
         try:
-            # Build query (pseudo-code; actual implementation depends on ORM)
-            # query = f"SELECT COUNT(*) FROM {table_name} WHERE {ref_field} = %s"
-            # count = db_session.execute(query, (patient_id,)).scalar()
+            from sqlalchemy import text
             
-            # For now, return 0 as placeholder
-            # In production, use SQLAlchemy:
-            # from sqlalchemy import text
-            # count = self.db_session.query(...).filter(...).count()
-            # if not dry_run:
-            #     self.db_session.query(...).filter(...).delete()
+            # Handle special cases for indirect references
+            if table_name == "asha_commissions":
+                # Delete commissions for ASHA workers assigned to this patient
+                query = text(f"""
+                    SELECT COUNT(*) FROM {table_name} 
+                    WHERE asha_worker_id IN (
+                        SELECT asha_worker_id FROM asha_patient_assignments 
+                        WHERE patient_id = :patient_id
+                    )
+                """)
+            elif table_name in ["ai_results", "photographs"]:
+                # Delete via session_id
+                query = text(f"""
+                    SELECT COUNT(*) FROM {table_name} 
+                    WHERE session_id IN (
+                        SELECT session_id FROM monitoring_sessions 
+                        WHERE patient_id = :patient_id
+                    )
+                """)
+            elif table_name == "notifications" and ref_field == "user_id":
+                # Delete notifications for user linked to patient
+                query = text(f"""
+                    SELECT COUNT(*) FROM {table_name} 
+                    WHERE user_id IN (
+                        SELECT user_id FROM users 
+                        WHERE user_id = :patient_id
+                    )
+                """)
+            elif table_name == "audit_logs":
+                # Delete audit logs referencing this patient
+                query = text(f"""
+                    SELECT COUNT(*) FROM {table_name} 
+                    WHERE record_id = :patient_id OR user_id = :patient_id
+                """)
+            else:
+                # Direct reference
+                query = text(f"SELECT COUNT(*) FROM {table_name} WHERE {ref_field} = :patient_id")
             
-            count = 0
-            logger.debug(f"Would delete from {table_name}: {count} rows")
+            # Count records to be deleted
+            result = self.db_session.execute(query, {"patient_id": patient_id})
+            count = result.scalar() or 0
+            
+            if count > 0 and not dry_run:
+                # Execute deletion
+                if table_name == "asha_commissions":
+                    delete_query = text(f"""
+                        DELETE FROM {table_name} 
+                        WHERE asha_worker_id IN (
+                            SELECT asha_worker_id FROM asha_patient_assignments 
+                            WHERE patient_id = :patient_id
+                        )
+                    """)
+                elif table_name in ["ai_results", "photographs"]:
+                    delete_query = text(f"""
+                        DELETE FROM {table_name} 
+                        WHERE session_id IN (
+                            SELECT session_id FROM monitoring_sessions 
+                            WHERE patient_id = :patient_id
+                        )
+                    """)
+                elif table_name == "notifications" and ref_field == "user_id":
+                    delete_query = text(f"""
+                        DELETE FROM {table_name} 
+                        WHERE user_id IN (
+                            SELECT user_id FROM users 
+                            WHERE user_id = :patient_id
+                        )
+                    """)
+                elif table_name == "audit_logs":
+                    delete_query = text(f"""
+                        DELETE FROM {table_name} 
+                        WHERE record_id = :patient_id OR user_id = :patient_id
+                    """)
+                else:
+                    delete_query = text(f"DELETE FROM {table_name} WHERE {ref_field} = :patient_id")
+                
+                self.db_session.execute(delete_query, {"patient_id": patient_id})
+                logger.info(f"Deleted {count} rows from {table_name}")
+            else:
+                logger.debug(f"Would delete from {table_name}: {count} rows")
+            
             return count
 
         except Exception as e:
@@ -258,19 +328,56 @@ class ErasurePipeline:
         Returns:
             Count of remaining records per table (should all be 0)
         """
+        from sqlalchemy import text
         verification = {}
 
         for table_name, ref_field in self.PATIENT_REFS.items():
-            # Check for remaining records
-            # remaining_count = self.db_session.query(...).filter(...).count()
-            remaining_count = 0
-            verification[table_name] = remaining_count
+            try:
+                # Handle special cases for indirect references
+                if table_name == "asha_commissions":
+                    query = text(f"""
+                        SELECT COUNT(*) FROM {table_name} 
+                        WHERE asha_worker_id IN (
+                            SELECT asha_worker_id FROM asha_patient_assignments 
+                            WHERE patient_id = :patient_id
+                        )
+                    """)
+                elif table_name in ["ai_results", "photographs"]:
+                    query = text(f"""
+                        SELECT COUNT(*) FROM {table_name} 
+                        WHERE session_id IN (
+                            SELECT session_id FROM monitoring_sessions 
+                            WHERE patient_id = :patient_id
+                        )
+                    """)
+                elif table_name == "notifications" and ref_field == "user_id":
+                    query = text(f"""
+                        SELECT COUNT(*) FROM {table_name} 
+                        WHERE user_id IN (
+                            SELECT user_id FROM users 
+                            WHERE user_id = :patient_id
+                        )
+                    """)
+                elif table_name == "audit_logs":
+                    query = text(f"""
+                        SELECT COUNT(*) FROM {table_name} 
+                        WHERE record_id = :patient_id OR user_id = :patient_id
+                    """)
+                else:
+                    query = text(f"SELECT COUNT(*) FROM {table_name} WHERE {ref_field} = :patient_id")
+                
+                result = self.db_session.execute(query, {"patient_id": patient_id})
+                remaining_count = result.scalar() or 0
+                verification[table_name] = remaining_count
 
-            if remaining_count > 0:
-                logger.warning(
-                    f"Verification failed: {remaining_count} records remain in "
-                    f"{table_name} for patient {patient_id}"
-                )
+                if remaining_count > 0:
+                    logger.warning(
+                        f"Verification failed: {remaining_count} records remain in "
+                        f"{table_name} for patient {patient_id}"
+                    )
+            except Exception as e:
+                logger.error(f"Error verifying deletion from {table_name}: {str(e)}")
+                verification[table_name] = -1  # Error indicator
 
         return verification
 
