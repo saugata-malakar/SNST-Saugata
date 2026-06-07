@@ -58,6 +58,8 @@ class Settings(BaseSettings):
     
     # ML Model Paths
     WOUND_MODEL_PATH: str = "./models/wound_severity_best.pth"
+    WOUND_TISSUE_MODEL_PATH: str = "./models/wound_tissue_best.pth"  # Week 3
+    PERIWOUND_MODEL_PATH: str = "./models/periwound_best.pth"  # Week 3
     SKIN_MODEL_PATH: str = "./models/skin_classifier_best.pth"
     EYE_MODEL_PATH: str = "./models/eye_model_best.pth"
     INFERENCE_DEVICE: str = "cpu"  # "cpu" or "cuda"
