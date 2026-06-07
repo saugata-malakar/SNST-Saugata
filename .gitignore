@@ -52,3 +52,4 @@ models/
 *.pth
 *.h5
 *.onnx
+SNST-Saugata/

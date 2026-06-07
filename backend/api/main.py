@@ -140,6 +140,14 @@ if settings.ENABLE_INFERENCE:
     except Exception as e:
         print(f"[router] ✗ Wound tissue router failed: {e}")
     
+    # Week 4 - Complete Wound Analysis Pipeline (Sharif)
+    try:
+        from backend.api.routers.wound_inference import router as wound_inference_router
+        app.include_router(wound_inference_router)
+        print("[router] ✓ Week 4 wound inference pipeline registered")
+    except Exception as e:
+        print(f"[router] ✗ Week 4 wound inference pipeline failed: {e}")
+    
     # Skin and Eye routers - Coming soon
     # from backend.api.routers import skin, eye
     # app.include_router(skin.router, prefix="/api/v1/skin", tags=["skin"])
