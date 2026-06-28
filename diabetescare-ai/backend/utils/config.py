@@ -51,6 +51,8 @@ class Settings(BaseSettings):
     DATA_LOCALISATION_REGION: str = "Mumbai"  # India only
     K_ANONYMITY_THRESHOLD: int = 5  # Minimum group size for export
     AUDIT_LOG_RETENTION_DAYS: int = 365 * 7  # 7 years (medical records)
+    ENFORCE_HTTPS: bool = False  # Set to True in production to force HTTPS only
+    ENCRYPTION_KEY: str = "your-encryption-key-here-32bytes"  # Must be 32 bytes or derived for AES-256
     
     # File Upload
     MAX_UPLOAD_SIZE_MB: int = 50  # Max image size

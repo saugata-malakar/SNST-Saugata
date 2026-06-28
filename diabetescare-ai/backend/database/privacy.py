@@ -51,6 +51,7 @@ class PII_FIELD_MAP:
             "patient_id": SensitivityLevel.DIRECT_IDENTIFIER,
             "name": SensitivityLevel.DIRECT_IDENTIFIER,
             "phone": SensitivityLevel.DIRECT_IDENTIFIER,
+            "email": SensitivityLevel.DIRECT_IDENTIFIER,
             "age": SensitivityLevel.QUASI_IDENTIFIER,
             "gender": SensitivityLevel.QUASI_IDENTIFIER,
             "village": SensitivityLevel.QUASI_IDENTIFIER,
@@ -333,9 +334,10 @@ class AnonymisationEngine:
             return "unknown"
         band_start = (age // 5) * 5
         band_end = band_start + 4
-        if band_end > 100:
+        if band_start >= 75:
             return "75+"
         return f"{band_start}-{band_end}"
+
 
     def generalise_diabetes_duration(self, years: int) -> str:
         """
@@ -521,7 +523,16 @@ class AnonymisationEngine:
             (is_k_anonymous, report_dict)
         """
         if not records:
-            return True, {"total_records": 0, "groups": {}, "violations": 0}
+            return True, {
+                "total_records": 0,
+                "total_groups": 0,
+                "quasi_identifiers": quasi_identifiers,
+                "k_anonymity_threshold": self.K_ANONYMITY_THRESHOLD,
+                "violations": 0,
+                "violation_keys": [],
+                "smallest_group_size": 0,
+                "is_k_anonymous": True
+            }
 
         # Group records
         groups = {}

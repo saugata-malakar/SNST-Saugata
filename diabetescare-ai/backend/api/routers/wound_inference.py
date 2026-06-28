@@ -411,45 +411,22 @@ pipeline = WoundInferencePipeline(
 # API ENDPOINTS
 # ============================================================================
 
-@router.post("/woundlive", response_model=BatchWoundAnalysisResponse)
-async def wound_live_inference(
-    files: List[UploadFile] = File(..., description="3 wound photos from monitoring session")
-):
-    """
-    Complete wound analysis pipeline for monitoring session.
-    
-    **Week 4 Deliverable - Sharif Hossain Sarkar**
-    
-    Pipeline:
-    1. CV preprocessing (resize, normalize)
-    2. SAM2 segmentation (wound boundary)
-    3. Severity model (Wagner grade 0-5)
-    4. Tissue model (tissue type classification)
-    5. Periwound analysis (inflammation detection)
-    6. Area estimation (wound size in cm²)
-    7. Gemini fallback (low confidence cases)
-    
-    **Batch Inference**: Handles 3 photos in one call
-    **Latency Target**: ≤6 seconds on CPU
-    **Fallback**: Gemini API for confidence < 0.7
-    
-    Returns:
-    - severity_grade (0-5)
-    - grade_confidence (0-1)
-    - tissue_colour (string)
-    - colour_confidence (0-1)
-    - periwound_redness (bool)
-    - wound_area_cm2 (float)
-    - fallback_triggered (bool)
-    """
+async def _run_wound_inference_pipeline(files: List[UploadFile], expected_count: Optional[int] = None):
     start_time = time.time()
     
     # Validate number of images
-    if len(files) != 3:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Expected 3 images for monitoring session, got {len(files)}"
-        )
+    if expected_count is not None:
+        if len(files) != expected_count:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Expected {expected_count} images for monitoring session, got {len(files)}"
+            )
+    else:
+        if not (1 <= len(files) <= 3):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Expected 1 to 3 images, got {len(files)}"
+            )
     
     # Load images
     images = []
@@ -523,6 +500,52 @@ async def wound_live_inference(
     except Exception as e:
         logger.error(f"Batch inference failed: {e}")
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
+
+@router.post("/wound", response_model=BatchWoundAnalysisResponse)
+async def wound_inference(
+    files: List[UploadFile] = File(..., description="1-3 wound photos from monitoring session")
+):
+    """
+    Complete wound analysis pipeline for monitoring session.
+    
+    Accepts 1 to 3 images.
+    """
+    return await _run_wound_inference_pipeline(files, expected_count=None)
+
+
+@router.post("/woundlive", response_model=BatchWoundAnalysisResponse)
+async def wound_live_inference(
+    files: List[UploadFile] = File(..., description="3 wound photos from monitoring session")
+):
+    """
+    Complete wound analysis pipeline for monitoring session.
+    
+    **Week 4 Deliverable - Sharif Hossain Sarkar**
+    
+    Pipeline:
+    1. CV preprocessing (resize, normalize)
+    2. SAM2 segmentation (wound boundary)
+    3. Severity model (Wagner grade 0-5)
+    4. Tissue model (tissue type classification)
+    5. Periwound analysis (inflammation detection)
+    6. Area estimation (wound size in cm²)
+    7. Gemini fallback (low confidence cases)
+    
+    **Batch Inference**: Handles 3 photos in one call
+    **Latency Target**: ≤6 seconds on CPU
+    **Fallback**: Gemini API for confidence < 0.7
+    
+    Returns:
+    - severity_grade (0-5)
+    - grade_confidence (0-1)
+    - tissue_colour (string)
+    - colour_confidence (0-1)
+    - periwound_redness (bool)
+    - wound_area_cm2 (float)
+    - fallback_triggered (bool)
+    """
+    return await _run_wound_inference_pipeline(files, expected_count=3)
 
 
 @router.get("/health")

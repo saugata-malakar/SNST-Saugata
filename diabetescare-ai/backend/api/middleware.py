@@ -1,238 +1,114 @@
-"""
-JWT authentication middleware for FastAPI.
+import os
+from datetime import datetime
 
-Provides:
-- verify_jwt() - Decode and validate JWT tokens
-- get_current_user() - FastAPI dependency for protected endpoints
-- get_current_patient() - Patient-specific dependency
-- get_current_doctor() - Doctor-specific dependency
-- get_current_asha() - ASHA worker-specific dependency
-
-Migration from Flask: backend/legacy/middleware/auth_middleware.py
-
-Owner: Sahil Kumar Gupta (adapted from Flask legacy)
-"""
-
-from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPBearer, HTTPAuthCredentials
+from fastapi import Request
+from fastapi.responses import JSONResponse
+from jose import JWTError, jwt
 from sqlalchemy.orm import Session
-import jwt
-from datetime import datetime, timedelta
-from typing import Dict, Optional
-import uuid
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.types import ASGIApp
 
-from backend.utils.config import settings
-from backend.database.session import get_db
-from backend.database.models import Patient, Doctor, AshaWorker
+from backend.database.models import AuditLog
+import backend.database.session as _db_session_module
 
-security = HTTPBearer()
+def _get_session_local():
+    return _db_session_module.SessionLocal
 
+SECRET_KEY = os.getenv("SECRET_KEY", "diabetescare-dev-secret-change-in-prod")
+ALGORITHM  = "HS256"
 
-class TokenPayload:
-    """JWT token payload structure."""
-    def __init__(self, user_id: str, user_type: str, role: Optional[str] = None):
-        self.user_id = user_id
-        self.user_type = user_type  # "patient", "doctor", "asha", "admin"
-        self.role = role
+# Paths that never require a JWT
+_PUBLIC_PREFIXES = ("/api/v1/auth/",)
+_PUBLIC_EXACT    = {"/health", "/docs", "/redoc", "/openapi.json"}
 
 
-def create_access_token(
-    user_id: str,
-    user_type: str,
-    expires_delta: Optional[timedelta] = None
-) -> str:
-    """
-    Create JWT access token.
-    
-    Args:
-        user_id: Patient/Doctor/ASHA ID (UUID string)
-        user_type: "patient" | "doctor" | "asha" | "admin"
-        expires_delta: Custom expiration (defaults to JWT_EXPIRATION_HOURS)
-    
-    Returns:
-        JWT token string
-    
-    Example:
-        token = create_access_token("pat-123", "patient")
-    """
-    if expires_delta is None:
-        expires_delta = timedelta(hours=settings.JWT_EXPIRATION_HOURS)
-    
-    expire = datetime.utcnow() + expires_delta
-    
-    payload = {
-        "user_id": user_id,
-        "user_type": user_type,
-        "exp": expire,
-        "iat": datetime.utcnow(),
-    }
-    
-    encoded_jwt = jwt.encode(
-        payload,
-        settings.JWT_SECRET,
-        algorithm=settings.JWT_ALGORITHM,
-    )
-    
-    return encoded_jwt
+def _classify_action(method: str) -> str:
+    return {
+        "GET":    "READ",
+        "POST":   "WRITE",
+        "PUT":    "WRITE",
+        "PATCH":  "WRITE",
+        "DELETE": "DELETE",
+    }.get(method.upper(), "READ")
 
 
-def verify_jwt(token: str) -> TokenPayload:
-    """
-    Decode and validate JWT token.
-    
-    Args:
-        token: JWT token string
-    
-    Returns:
-        TokenPayload with user_id and user_type
-    
-    Raises:
-        HTTPException: If token invalid or expired
-    
-    Example:
-        payload = verify_jwt(token)
-        print(payload.user_id)  # "pat-123"
-    """
-    try:
-        payload = jwt.decode(
-            token,
-            settings.JWT_SECRET,
-            algorithms=[settings.JWT_ALGORITHM],
-        )
-        
-        user_id: str = payload.get("user_id")
-        user_type: str = payload.get("user_type")
-        
-        if user_id is None or user_type is None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token payload",
-                headers={"WWW-Authenticate": "Bearer"},
+# ── JWT Auth Middleware ────────────────────────────────────────────────────────
+class JWTAuthMiddleware(BaseHTTPMiddleware):
+    def __init__(self, app: ASGIApp):
+        super().__init__(app)
+
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+
+        # Let public paths through
+        if path in _PUBLIC_EXACT:
+            return await call_next(request)
+        for prefix in _PUBLIC_PREFIXES:
+            if path.startswith(prefix):
+                return await call_next(request)
+
+        # Validate Bearer token
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return JSONResponse(
+                {"detail": "Not authenticated"},
+                status_code=401,
             )
-        
-        return TokenPayload(user_id=user_id, user_type=user_type)
-    
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token expired",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
-    except jwt.InvalidTokenError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+
+        token = auth_header.split(" ", 1)[1]
+        try:
+            payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+            request.state.user_id = payload.get("sub", "")
+            request.state.role    = payload.get("role", "")
+        except JWTError:
+            return JSONResponse(
+                {"detail": "Invalid or expired token"},
+                status_code=401,
+            )
+
+        return await call_next(request)
 
 
-async def get_current_user(
-    credentials: HTTPAuthCredentials = Depends(security),
-) -> TokenPayload:
-    """
-    FastAPI dependency for any authenticated user.
-    
-    Usage:
-        @router.get("/me")
-        async def get_me(user: TokenPayload = Depends(get_current_user)):
-            return {"user_id": user.user_id, "type": user.user_type}
-    """
-    token = credentials.credentials
-    return verify_jwt(token)
+# ── Audit Trail Middleware ─────────────────────────────────────────────────────
+class AuditTrailMiddleware(BaseHTTPMiddleware):
+    """Writes one row to audit_logs for every request that reaches /api/."""
 
+    def __init__(self, app: ASGIApp):
+        super().__init__(app)
 
-async def get_current_patient(
-    user: TokenPayload = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> Patient:
-    """
-    FastAPI dependency for patient endpoints.
-    Verifies user is a patient and loads patient record.
-    
-    Usage:
-        @router.get("/me")
-        async def get_patient_me(patient: Patient = Depends(get_current_patient)):
-            return patient
-    """
-    if user.user_type != "patient":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only patients can access this endpoint",
-        )
-    
-    patient = db.query(Patient).filter(
-        Patient.patient_id == uuid.UUID(user.user_id)
-    ).first()
-    
-    if patient is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Patient not found",
-        )
-    
-    return patient
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
 
+        path = request.url.path
+        if not path.startswith("/api/"):
+            return response
 
-async def get_current_doctor(
-    user: TokenPayload = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> Doctor:
-    """
-    FastAPI dependency for doctor endpoints.
-    Verifies user is a doctor and loads doctor record.
-    
-    Usage:
-        @router.get("/me")
-        async def get_doctor_me(doctor: Doctor = Depends(get_current_doctor)):
-            return doctor
-    """
-    if user.user_type != "doctor":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only doctors can access this endpoint",
-        )
-    
-    doctor = db.query(Doctor).filter(
-        Doctor.doctor_id == uuid.UUID(user.user_id)
-    ).first()
-    
-    if doctor is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Doctor not found",
-        )
-    
-    return doctor
+        # Resolve user / patient ids from request state (set by JWT middleware)
+        user_id    = getattr(request.state, "user_id", None)
+        patient_id = request.path_params.get("patient_id") or request.query_params.get("patient_id")
 
+        action = _classify_action(request.method)
+        # Override to LOGIN when hitting auth login
+        if "auth/login" in path:
+            action = "LOGIN"
 
-async def get_current_asha(
-    user: TokenPayload = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> AshaWorker:
-    """
-    FastAPI dependency for ASHA worker endpoints.
-    Verifies user is an ASHA worker and loads record.
-    
-    Usage:
-        @router.get("/me")
-        async def get_asha_me(asha: AshaWorker = Depends(get_current_asha)):
-            return asha
-    """
-    if user.user_type != "asha":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only ASHA workers can access this endpoint",
-        )
-    
-    asha = db.query(AshaWorker).filter(
-        AshaWorker.asha_worker_id == uuid.UUID(user.user_id)
-    ).first()
-    
-    if asha is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="ASHA worker not found",
-        )
-    
-    return asha
+        try:
+            db: Session = _get_session_local()()
+            log = AuditLog(
+                timestamp   = datetime.utcnow(),
+                user_id     = str(user_id) if user_id else None,
+                patient_id  = str(patient_id) if patient_id else None,
+                action      = action,
+                endpoint    = path,
+                method      = request.method.upper(),
+                status_code = response.status_code,
+                ip_address  = request.client.host if request.client else None,
+            )
+            db.add(log)
+            db.commit()
+        except Exception:
+            pass  # audit must never break the request path
+        finally:
+            db.close()
+
+        return response

@@ -17,8 +17,8 @@ from flwr.common import Metrics
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from ml.federated.fl_config import FLConfig
-from ml.federated.fl_model import create_model
+from sahil_federated.fl_config import FLConfig
+from sahil_federated.fl_model import create_model
 
 
 class FLServer:

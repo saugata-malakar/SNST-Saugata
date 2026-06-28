@@ -19,14 +19,14 @@ import torchvision.transforms as transforms
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from ml.federated.fl_config import FLConfig
-from ml.federated.fl_model import (
+from sahil_federated.fl_config import FLConfig
+from sahil_federated.fl_model import (
     WoundSeverityModelFL, 
     get_criterion, 
     get_optimizer,
     count_parameters
 )
-from ml.federated.data_partition import (
+from sahil_federated.data_partition import (
     WoundDatasetFL, 
     DataPartitioner
 )
@@ -83,7 +83,7 @@ class WoundSeverityClient(fl.client.NumPyClient):
     
     def _initialize_model(self) -> WoundSeverityModelFL:
         """Initialize model and load pretrained weights if available."""
-        from ml.federated.fl_model import create_model
+        from sahil_federated.fl_model import create_model
         
         model = create_model(self.config)
         

@@ -18,7 +18,25 @@ import io
 import numpy as np
 
 
-BASE_URL = "http://localhost:8000"
+@pytest.fixture(autouse=True)
+def mock_requests_to_testclient(monkeypatch):
+    from fastapi.testclient import TestClient
+    from backend.api.main import app
+    client = TestClient(app)
+    
+    def mock_get(url, *args, **kwargs):
+        path = url.replace("http://localhost:8000", "")
+        return client.get(path, *args, **kwargs)
+        
+    def mock_post(url, *args, **kwargs):
+        path = url.replace("http://localhost:8000", "")
+        return client.post(path, *args, **kwargs)
+        
+    monkeypatch.setattr(requests, "get", mock_get)
+    monkeypatch.setattr(requests, "post", mock_post)
+
+
+BASE_URL = "http://localhost:8000/api/v1"
 
 
 def create_test_image(size=(224, 224), color='red') -> bytes:
@@ -210,37 +228,159 @@ def test_gemini_fallback_low_confidence():
     print(f"\n✓ Gemini fallback test completed")
 
 
+def test_wound_endpoint_batch_and_types():
+    """
+    Test POST /infer/wound endpoint:
+    - 3 images in one call returns 3 objects
+    - All 7 JSON fields present and correctly typed
+    - Latency test: processing time <= 6s
+    """
+    print("\n" + "="*60)
+    print("TEST: /infer/wound 3-Image Batch & Type Schema")
+    print("="*60)
+    
+    files = []
+    for i in range(3):
+        img_bytes = create_test_image(color=['red', 'green', 'random'][i])
+        files.append(
+            ('files', (f'wound_{i+1}.jpg', img_bytes, 'image/jpeg'))
+        )
+    
+    import time
+    start = time.perf_counter()
+    response = requests.post(f"{BASE_URL}/infer/wound", files=files)
+    latency = time.perf_counter() - start
+    
+    assert response.status_code == 200, f"Failed: {response.text}"
+    data = response.json()
+    
+    assert data['total_images'] == 3
+    results = data['results']
+    assert len(results) == 3
+    
+    # Assert latency <= 6.0s
+    print(f"3-Image Batch Latency: {latency:.4f}s (Target: <= 6s)")
+    assert latency <= 6.0, f"Latency target exceeded: {latency:.2f}s > 6.0s"
+    
+    for r in results:
+        # Schema validation (7 required fields)
+        assert 'severity_grade' in r
+        assert 'grade_confidence' in r
+        assert 'tissue_colour' in r
+        assert 'colour_confidence' in r
+        assert 'periwound_redness' in r
+        assert 'wound_area_cm2' in r
+        assert 'fallback_triggered' in r
+        
+        # Correctly typed check
+        assert isinstance(r['severity_grade'], int)
+        assert isinstance(r['grade_confidence'], float)
+        assert isinstance(r['tissue_colour'], str)
+        assert isinstance(r['colour_confidence'], float)
+        assert isinstance(r['periwound_redness'], bool)
+        assert isinstance(r['wound_area_cm2'], float)
+        assert isinstance(r['fallback_triggered'], bool)
+
+
+def test_wound_endpoint_partial_batch():
+    """
+    Test POST /infer/wound endpoint:
+    - Accepts 1 image, returns 1 object
+    - Accepts 2 images, returns 2 objects
+    """
+    print("\n" + "="*60)
+    print("TEST: /infer/wound Partial Batch (1 and 2 images)")
+    print("="*60)
+    
+    # 1 Image
+    files = [('files', ('wound_1.jpg', create_test_image(), 'image/jpeg'))]
+    response = requests.post(f"{BASE_URL}/infer/wound", files=files)
+    assert response.status_code == 200, f"Failed: {response.text}"
+    data = response.json()
+    assert data['total_images'] == 1
+    assert len(data['results']) == 1
+    
+    # 2 Images
+    files = [
+        ('files', ('wound_1.jpg', create_test_image(), 'image/jpeg')),
+        ('files', ('wound_2.jpg', create_test_image(), 'image/jpeg'))
+    ]
+    response = requests.post(f"{BASE_URL}/infer/wound", files=files)
+    assert response.status_code == 200, f"Failed: {response.text}"
+    data = response.json()
+    assert data['total_images'] == 2
+    assert len(data['results']) == 2
+
+
+def test_wound_endpoint_fallback_trigger():
+    """
+    Test POST /infer/wound endpoint:
+    - Low-confidence/noisy/low-contrast image triggers Gemini fallback
+    - Assert fallback_triggered is True
+    """
+    print("\n" + "="*60)
+    print("TEST: /infer/wound Low Confidence Fallback")
+    print("="*60)
+    
+    # Create very low contrast/low quality/noisy image
+    # For example, all gray pixels with minor noise to trigger low confidence
+    gray_pixels = np.ones((224, 224, 3), dtype=np.uint8) * 128
+    # Add minor noise
+    noise = np.random.randint(-5, 5, (224, 224, 3)).astype(np.int16)
+    noisy_pixels = np.clip(gray_pixels + noise, 0, 255).astype(np.uint8)
+    
+    img = Image.fromarray(noisy_pixels)
+    img_bytes = io.BytesIO()
+    img.save(img_bytes, format='JPEG')
+    img_bytes.seek(0)
+    
+    files = [('files', ('low_contrast.jpg', img_bytes.getvalue(), 'image/jpeg'))]
+    response = requests.post(f"{BASE_URL}/infer/wound", files=files)
+    
+    assert response.status_code == 200, f"Failed: {response.text}"
+    data = response.json()
+    
+    # The first result should have fallback_triggered = True because confidence is low
+    result = data['results'][0]
+    print(f"Grade Confidence: {result['grade_confidence']:.2%}")
+    print(f"Colour Confidence: {result['colour_confidence']:.2%}")
+    print(f"Fallback Triggered: {result['fallback_triggered']}")
+    
+    assert result['fallback_triggered'] is True, "Expected fallback_triggered=True on low contrast image"
+
+
 def test_invalid_batch_size():
-    """Test that API rejects non-3 image batches"""
+    """Test that API rejects non-3 image batches for /woundlive and non 1-3 for /wound"""
     print("\n" + "="*60)
     print("TEST: Invalid Batch Size")
     print("="*60)
     
-    # Try with 2 images (should fail)
+    # Try with 2 images on woundlive (should fail)
     files = []
     for i in range(2):
         img_bytes = create_test_image()
         files.append(
             ('files', (f'wound_{i+1}.jpg', img_bytes, 'image/jpeg'))
         )
-    
     response = requests.post(f"{BASE_URL}/infer/woundlive", files=files)
-    
     assert response.status_code == 400
-    print(f"✓ Correctly rejected batch with 2 images")
+    print(f"✓ Correctly rejected batch with 2 images on /woundlive")
     
-    # Try with 4 images (should fail)
+    # Try with 0 images on wound (should fail)
+    response = requests.post(f"{BASE_URL}/infer/wound", files=[])
+    assert response.status_code in (400, 422)
+    print(f"✓ Correctly rejected empty batch on /wound")
+
+    # Try with 4 images on wound (should fail)
     files = []
     for i in range(4):
         img_bytes = create_test_image()
         files.append(
             ('files', (f'wound_{i+1}.jpg', img_bytes, 'image/jpeg'))
         )
-    
-    response = requests.post(f"{BASE_URL}/infer/woundlive", files=files)
-    
+    response = requests.post(f"{BASE_URL}/infer/wound", files=files)
     assert response.status_code == 400
-    print(f"✓ Correctly rejected batch with 4 images")
+    print(f"✓ Correctly rejected batch with 4 images on /wound")
 
 
 if __name__ == "__main__":
@@ -262,17 +402,20 @@ if __name__ == "__main__":
         test_models_info()
         test_batch_inference_three_images()
         test_gemini_fallback_low_confidence()
+        test_wound_endpoint_batch_and_types()
+        test_wound_endpoint_partial_batch()
+        test_wound_endpoint_fallback_trigger()
         test_invalid_batch_size()
         
         print("\n" + "="*70)
         print(" "*20 + "ALL TESTS PASSED ✓")
         print("="*70)
-        print("\nWeek 4 Deliverables Verified:")
-        print("  ✓ Batch inference (3 photos per session)")
+        print("\nWeek 4/7 Deliverables Verified:")
+        print("  ✓ Batch inference (1-3 photos per session for /wound, 3 for /woundlive)")
         print("  ✓ Complete pipeline (CV → SAM2 → Models → JSON)")
         print("  ✓ Latency benchmark (≤6s target)")
-        print("  ✓ Gemini fallback on low confidence")
-        print("  ✓ Structured JSON output with all required fields")
+        print("  ✓ Gemini fallback on low confidence (fallback_triggered=True)")
+        print("  ✓ Structured JSON output with all 7 required fields correctly typed")
         
     except AssertionError as e:
         print(f"\n✗ TEST FAILED: {e}")

@@ -85,9 +85,9 @@ def create_test_image(case_idx: int) -> Image.Image:
     
     for c in range(3):
         img_array[:, :, c] = np.clip(
-            img_array[:, :, c] + (base_color[c] - 128),
+            img_array[:, :, c].astype(np.int16) + (base_color[c] - 128),
             0, 255
-        )
+        ).astype(np.uint8)
     
     return Image.fromarray(img_array)
 

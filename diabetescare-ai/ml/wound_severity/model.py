@@ -219,12 +219,13 @@ class ModelConfig:
     }
 
 
-def create_model(config: Optional[ModelConfig] = None) -> WoundSeverityModel:
+def create_model(config: Optional[ModelConfig] = None, pretrained: bool = True) -> WoundSeverityModel:
     """
     Factory function to create wound severity model.
     
     Args:
         config: Model configuration (uses default if None)
+        pretrained: Use ImageNet pretrained weights
         
     Returns:
         Initialized WoundSeverityModel
@@ -235,7 +236,7 @@ def create_model(config: Optional[ModelConfig] = None) -> WoundSeverityModel:
     model = WoundSeverityModel(
         num_classes=config.NUM_CLASSES,
         dropout_rate=config.DROPOUT_RATE,
-        pretrained=True
+        pretrained=pretrained
     )
     
     return model
@@ -252,7 +253,7 @@ def load_pretrained_model(checkpoint_path: str, device: str = "cpu") -> WoundSev
     Returns:
         Loaded model in eval mode
     """
-    model = create_model()
+    model = create_model(pretrained=False)
     
     # Load checkpoint
     checkpoint = torch.load(checkpoint_path, map_location=device)

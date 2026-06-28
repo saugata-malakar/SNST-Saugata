@@ -26,6 +26,7 @@ import uuid
 
 from ml.clinical_nlp.clinical_nlp_pipeline import ClinicalNLPPipeline
 from backend.database.models import ClinicalNote, Patient, MonitoringSession
+from backend.database.session import get_db
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
@@ -159,16 +160,8 @@ def get_nlp_pipeline():
     return _nlp_pipeline
 
 
-# Dependency: Get database session (mock for now)
-
-def get_db():
-    """Get database session - to be implemented with proper DB connection"""
-    # TODO: Implement proper database session
-    # For now, return None - will implement database storage later
-    return None
-
-
 # Endpoints
+
 
 @router.post("/extract", response_model=NLPExtractResponse)
 async def extract_entities(
@@ -198,28 +191,60 @@ async def extract_entities(
     try:
         logger.info(f"Processing NLP extraction for note (length: {len(request.note_text)})")
         
+        # Validate and parse UUIDs
+        patient_uuid = None
+        if request.patient_id:
+            try:
+                patient_uuid = uuid.UUID(request.patient_id)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid patient_id UUID format")
+                
+            # Verify patient exists
+            if db:
+                patient_exists = db.query(Patient).filter(Patient.patient_id == patient_uuid).first()
+                if not patient_exists:
+                    raise HTTPException(status_code=404, detail="Patient not found")
+        else:
+            raise HTTPException(status_code=400, detail="patient_id is required to persist clinical notes")
+
+        session_uuid = None
+        if request.session_id:
+            try:
+                session_uuid = uuid.UUID(request.session_id)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid session_id UUID format")
+                
+        doctor_uuid = None
+        if request.doctor_id:
+            try:
+                doctor_uuid = uuid.UUID(request.doctor_id)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid doctor_id UUID format")
+
         # Extract entities
         result = nlp.process_note(request.note_text)
+        note_uuid = uuid.uuid4()
         
-        # Generate note ID
-        note_id = str(uuid.uuid4())
-        
-        # TODO: Store in database
-        # if db:
-        #     db_note = ClinicalNote(
-        #         note_id=uuid.UUID(note_id),
-        #         patient_id=uuid.UUID(request.patient_id) if request.patient_id else None,
-        #         session_id=uuid.UUID(request.session_id) if request.session_id else None,
-        #         doctor_id=uuid.UUID(request.doctor_id) if request.doctor_id else None,
-        #         original_text=request.note_text,
-        #         wound_locations=result["extracted_entities"]["wound_location"],
-        #         infection_signs=result["extracted_entities"]["infection_sign"],
-        #         treatment_recommendations=result["extracted_entities"]["treatment_recommendation"],
-        #         extracted_at=datetime.utcnow(),
-        #         nlp_model_version="en_core_web_sm"
-        #     )
-        #     db.add(db_note)
-        #     db.commit()
+        # Persist to database if db is provided
+        if db:
+            db_note = ClinicalNote(
+                note_id=note_uuid,
+                patient_id=patient_uuid,
+                session_id=session_uuid,
+                doctor_id=doctor_uuid,
+                original_text=request.note_text,
+                wound_locations=result["extracted_entities"]["wound_location"],
+                infection_signs=result["extracted_entities"]["infection_sign"],
+                treatment_recommendations=result["extracted_entities"]["treatment_recommendation"],
+                extracted_at=datetime.utcnow(),
+                nlp_model_version="en_core_web_sm"
+            )
+            db.add(db_note)
+            db.commit()
+            db.refresh(db_note)
+            note_id = str(db_note.note_id)
+        else:
+            note_id = str(note_uuid)
         
         # Build response
         response = NLPExtractResponse(
@@ -239,13 +264,15 @@ async def extract_entities(
             extracted_at=result["timestamp"]
         )
         
-        logger.info(f"✓ NLP extraction complete: {note_id}")
+        logger.info(f"✓ NLP extraction complete and persisted: {note_id}")
         logger.info(f"  - Wound locations: {len(response.wound_locations)}")
         logger.info(f"  - Infection signs: {len(response.infection_signs)}")
         logger.info(f"  - Treatment recommendations: {len(response.treatment_recommendations)}")
         
         return response
         
+    except HTTPException as he:
+        raise he
     except Exception as e:
         logger.error(f"NLP extraction failed: {e}")
         raise HTTPException(status_code=500, detail=f"Extraction failed: {str(e)}")

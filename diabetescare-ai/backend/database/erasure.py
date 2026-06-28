@@ -11,9 +11,12 @@ Owner: Saugata Malakar
 """
 
 import logging
+import uuid
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 from enum import Enum
+
+from backend.utils.logging import AuditLogger
 
 logger = logging.getLogger(__name__)
 
@@ -44,8 +47,9 @@ class ErasurePipeline:
         # LEVEL 1: Transactions & payments (leaf nodes)
         "payment_transactions": DeletionPriority.LEVEL_1,
         "asha_commissions": DeletionPriority.LEVEL_1,
+        "commissions": DeletionPriority.LEVEL_1,
         
-        # LEVEL 2: Session artifacts
+        # LEVEL 2: Session artifacts & devices/consultations
         "ai_results": DeletionPriority.LEVEL_2,
         "photographs": DeletionPriority.LEVEL_2,
         "alerts": DeletionPriority.LEVEL_2,
@@ -54,28 +58,36 @@ class ErasurePipeline:
         "research_exports": DeletionPriority.LEVEL_2,
         "notification_preferences": DeletionPriority.LEVEL_2,
         "teleconsult_requests": DeletionPriority.LEVEL_2,
+        "devices": DeletionPriority.LEVEL_2,
+        "consultations": DeletionPriority.LEVEL_2,
         
-        # LEVEL 3: Session & monitoring data
+        # LEVEL 3: Session, screening & monitoring data
         "monitoring_sessions": DeletionPriority.LEVEL_3,
         "session_schedule": DeletionPriority.LEVEL_3,
         "prescriptions": DeletionPriority.LEVEL_3,
+        "screenings": DeletionPriority.LEVEL_3,
         
         # LEVEL 4: Intermediate relationships
         "asha_patient_assignments": DeletionPriority.LEVEL_3,
         "doctor_patient_assignments": DeletionPriority.LEVEL_3,
         "subscriptions": DeletionPriority.LEVEL_3,
         
-        # LEVEL 5: Core patient data
+        # LEVEL 5: Core patient & user data
         "consents": DeletionPriority.LEVEL_4,
         "patient_medical_history": DeletionPriority.LEVEL_4,
         "wound_sites": DeletionPriority.LEVEL_4,
         "patients": DeletionPriority.LEVEL_4,
+        "users": DeletionPriority.LEVEL_4,
     }
 
     # Reference fields for cascade deletion
     PATIENT_REFS = {
+        "patients": "patient_id",
+        "audit_logs": "patient_id",
         "payment_transactions": "patient_id",
+        "notification_preferences": "user_id",
         "asha_commissions": "asha_worker_id",  # via assignment
+        "commissions": "screening_id",  # via screening
         "alerts": "patient_id",
         "notifications": "user_id",  # user linked to patient
         "ai_results": "session_id",  # via session
@@ -91,6 +103,10 @@ class ErasurePipeline:
         "wound_sites": "patient_id",
         "teleconsult_requests": "patient_id",
         "research_exports": "exported_by",  # audit field
+        "devices": "owner_id",
+        "consultations": "patient_id",
+        "screenings": "patient_id",
+        "users": "id",
     }
 
     def __init__(self, db_session):
@@ -105,31 +121,28 @@ class ErasurePipeline:
         self.start_time = None
         self.end_time = None
 
-    def request_erasure(self, patient_id: str) -> Dict:
+    def request_erasure(self, patient_id: str, reason: str = "withdrawal") -> str:
         """
         Initiate erasure request for a patient.
         
-        Implements 72-hour window requirement:
-        - Request submitted
-        - Review period (optional)
-        - Irreversible deletion
+        Implements 72-hour window requirement.
 
         Args:
             patient_id: UUID of patient to erase
+            reason: Reason for deletion
 
         Returns:
-            Erasure request metadata
+            String deletion request ID
         """
-        request_meta = {
-            "patient_id": patient_id,
-            "requested_at": datetime.utcnow().isoformat(),
-            "deadline_at": None,  # 72 hours from request
-            "status": "pending",  # pending → approved → executing → completed
-            "initiator": "system",  # or API user ID
-        }
-        
-        logger.info(f"Erasure request created: {request_meta}")
-        return request_meta
+        deletion_id = str(uuid.uuid4())
+        AuditLogger.log_patient_deletion(
+            patient_id=patient_id,
+            user_id="system",
+            reason=reason,
+            rows_deleted=0
+        )
+        logger.info(f"Erasure request created for patient {patient_id} with ID {deletion_id}")
+        return deletion_id
 
     def execute_erasure(self, patient_id: str, dry_run: bool = False) -> Dict:
         """
@@ -146,6 +159,27 @@ class ErasurePipeline:
         """
         self.start_time = datetime.utcnow()
         self.deletion_log = []
+        
+        # Look up user_id before deleting from patients
+        self.patient_user_id = None
+        try:
+            from sqlalchemy import text
+            import uuid as py_uuid
+            if "sqlite" in str(self.db_session.bind.url):
+                try:
+                    patient_id_param = py_uuid.UUID(str(patient_id)).hex
+                except ValueError:
+                    patient_id_param = patient_id
+            else:
+                patient_id_param = patient_id
+
+            user_id_query = text("SELECT user_id FROM patients WHERE patient_id = :patient_id")
+            user_id_res = self.db_session.execute(user_id_query, {"patient_id": patient_id_param})
+            user_row = user_id_res.fetchone()
+            if user_row:
+                self.patient_user_id = user_row[0]
+        except Exception as e:
+            logger.warning(f"Could not pre-fetch user_id for patient {patient_id}: {e}")
 
         try:
             # Sort tables by deletion priority
@@ -189,7 +223,7 @@ class ErasurePipeline:
 
             report = {
                 "patient_id": patient_id,
-                "status": "completed",
+                "status": "success",
                 "dry_run": dry_run,
                 "started_at": self.start_time.isoformat(),
                 "completed_at": self.end_time.isoformat(),
@@ -228,6 +262,17 @@ class ErasurePipeline:
         """
         try:
             from sqlalchemy import text
+            import uuid as py_uuid
+            
+            # Format patient_id for SQLite (hex string without dashes)
+            is_sqlite = self.db_session.bind.dialect.name == "sqlite"
+            if is_sqlite:
+                try:
+                    patient_id_param = py_uuid.UUID(str(patient_id)).hex
+                except ValueError:
+                    patient_id_param = patient_id
+            else:
+                patient_id_param = patient_id
             
             # Handle special cases for indirect references
             if table_name == "asha_commissions":
@@ -239,6 +284,33 @@ class ErasurePipeline:
                         WHERE patient_id = :patient_id
                     )
                 """)
+            elif table_name == "commissions":
+                # Delete commissions via screening
+                query = text(f"""
+                    SELECT COUNT(*) FROM {table_name} 
+                    WHERE screening_id IN (
+                        SELECT id FROM screenings 
+                        WHERE patient_id = :patient_id
+                    )
+                """)
+            elif table_name == "devices":
+                # Delete devices owned by this patient
+                query = text(f"""
+                    SELECT COUNT(*) FROM {table_name} 
+                    WHERE owner_id = :patient_id AND owner_type = 'patient'
+                """)
+            elif table_name == "users":
+                # Delete user row linked to patient
+                if getattr(self, "patient_user_id", None):
+                    query = text(f"SELECT COUNT(*) FROM {table_name} WHERE id = :user_id")
+                else:
+                    query = text(f"""
+                        SELECT COUNT(*) FROM {table_name} 
+                        WHERE id IN (
+                            SELECT user_id FROM patients 
+                            WHERE patient_id = :patient_id
+                        )
+                    """)
             elif table_name in ["ai_results", "photographs"]:
                 # Delete via session_id
                 query = text(f"""
@@ -246,15 +318,6 @@ class ErasurePipeline:
                     WHERE session_id IN (
                         SELECT session_id FROM monitoring_sessions 
                         WHERE patient_id = :patient_id
-                    )
-                """)
-            elif table_name == "notifications" and ref_field == "user_id":
-                # Delete notifications for user linked to patient
-                query = text(f"""
-                    SELECT COUNT(*) FROM {table_name} 
-                    WHERE user_id IN (
-                        SELECT user_id FROM users 
-                        WHERE user_id = :patient_id
                     )
                 """)
             elif table_name == "audit_logs":
@@ -268,7 +331,10 @@ class ErasurePipeline:
                 query = text(f"SELECT COUNT(*) FROM {table_name} WHERE {ref_field} = :patient_id")
             
             # Count records to be deleted
-            result = self.db_session.execute(query, {"patient_id": patient_id})
+            params = {"patient_id": patient_id_param}
+            if getattr(self, "patient_user_id", None):
+                params["user_id"] = self.patient_user_id
+            result = self.db_session.execute(query, params)
             count = result.scalar() or 0
             
             if count > 0 and not dry_run:
@@ -281,20 +347,36 @@ class ErasurePipeline:
                             WHERE patient_id = :patient_id
                         )
                     """)
+                elif table_name == "commissions":
+                    delete_query = text(f"""
+                        DELETE FROM {table_name} 
+                        WHERE screening_id IN (
+                            SELECT id FROM screenings 
+                            WHERE patient_id = :patient_id
+                        )
+                    """)
+                elif table_name == "devices":
+                    delete_query = text(f"""
+                        DELETE FROM {table_name} 
+                        WHERE owner_id = :patient_id AND owner_type = 'patient'
+                    """)
+                elif table_name == "users":
+                    if getattr(self, "patient_user_id", None):
+                        delete_query = text(f"DELETE FROM {table_name} WHERE id = :user_id")
+                    else:
+                        delete_query = text(f"""
+                            DELETE FROM {table_name} 
+                            WHERE id IN (
+                                SELECT user_id FROM patients 
+                                WHERE patient_id = :patient_id
+                            )
+                        """)
                 elif table_name in ["ai_results", "photographs"]:
                     delete_query = text(f"""
                         DELETE FROM {table_name} 
                         WHERE session_id IN (
                             SELECT session_id FROM monitoring_sessions 
                             WHERE patient_id = :patient_id
-                        )
-                    """)
-                elif table_name == "notifications" and ref_field == "user_id":
-                    delete_query = text(f"""
-                        DELETE FROM {table_name} 
-                        WHERE user_id IN (
-                            SELECT user_id FROM users 
-                            WHERE user_id = :patient_id
                         )
                     """)
                 elif table_name == "audit_logs":
@@ -305,7 +387,7 @@ class ErasurePipeline:
                 else:
                     delete_query = text(f"DELETE FROM {table_name} WHERE {ref_field} = :patient_id")
                 
-                self.db_session.execute(delete_query, {"patient_id": patient_id})
+                self.db_session.execute(delete_query, params)
                 logger.info(f"Deleted {count} rows from {table_name}")
             else:
                 logger.debug(f"Would delete from {table_name}: {count} rows")
@@ -329,6 +411,18 @@ class ErasurePipeline:
             Count of remaining records per table (should all be 0)
         """
         from sqlalchemy import text
+        import uuid as py_uuid
+        
+        # Format patient_id for SQLite (hex string without dashes)
+        is_sqlite = self.db_session.bind.dialect.name == "sqlite"
+        if is_sqlite:
+            try:
+                patient_id_param = py_uuid.UUID(str(patient_id)).hex
+            except ValueError:
+                patient_id_param = patient_id
+        else:
+            patient_id_param = patient_id
+            
         verification = {}
 
         for table_name, ref_field in self.PATIENT_REFS.items():
@@ -342,20 +436,36 @@ class ErasurePipeline:
                             WHERE patient_id = :patient_id
                         )
                     """)
+                elif table_name == "commissions":
+                    query = text(f"""
+                        SELECT COUNT(*) FROM {table_name} 
+                        WHERE screening_id IN (
+                            SELECT id FROM screenings 
+                            WHERE patient_id = :patient_id
+                        )
+                    """)
+                elif table_name == "devices":
+                    query = text(f"""
+                        SELECT COUNT(*) FROM {table_name} 
+                        WHERE owner_id = :patient_id AND owner_type = 'patient'
+                    """)
+                elif table_name == "users":
+                    if getattr(self, "patient_user_id", None):
+                        query = text(f"SELECT COUNT(*) FROM {table_name} WHERE id = :user_id")
+                    else:
+                        query = text(f"""
+                            SELECT COUNT(*) FROM {table_name} 
+                            WHERE id IN (
+                                SELECT user_id FROM patients 
+                                WHERE patient_id = :patient_id
+                            )
+                        """)
                 elif table_name in ["ai_results", "photographs"]:
                     query = text(f"""
                         SELECT COUNT(*) FROM {table_name} 
                         WHERE session_id IN (
                             SELECT session_id FROM monitoring_sessions 
                             WHERE patient_id = :patient_id
-                        )
-                    """)
-                elif table_name == "notifications" and ref_field == "user_id":
-                    query = text(f"""
-                        SELECT COUNT(*) FROM {table_name} 
-                        WHERE user_id IN (
-                            SELECT user_id FROM users 
-                            WHERE user_id = :patient_id
                         )
                     """)
                 elif table_name == "audit_logs":
@@ -366,7 +476,10 @@ class ErasurePipeline:
                 else:
                     query = text(f"SELECT COUNT(*) FROM {table_name} WHERE {ref_field} = :patient_id")
                 
-                result = self.db_session.execute(query, {"patient_id": patient_id})
+                params = {"patient_id": patient_id_param}
+                if getattr(self, "patient_user_id", None):
+                    params["user_id"] = self.patient_user_id
+                result = self.db_session.execute(query, params)
                 remaining_count = result.scalar() or 0
                 verification[table_name] = remaining_count
 
@@ -460,6 +573,7 @@ Example deletion order for a patient with ID 'abc123':
    )  [45 rows]
 5. DELETE FROM alerts WHERE patient_id = 'abc123'  [8 rows]
 6. DELETE FROM monitoring_sessions WHERE patient_id = 'abc123'  [12 rows]
+7. DELETE FROM patients WHERE patient_id = 'abc123'  [1 row]
 ...and so on
 
 Total rows deleted: ~500

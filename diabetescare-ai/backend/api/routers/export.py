@@ -26,7 +26,7 @@ from backend.database.privacy import (
 from backend.database.session import get_db
 from backend.database.models import (
     Patient, MonitoringSession, AIResult, WoundSite,
-    Consent, ASHAWorker, AuditLog
+    Consent, AshaWorker, AuditLog
 )
 
 logger = logging.getLogger(__name__)
@@ -118,7 +118,7 @@ async def export_data(
         "ai_results": AIResult,
         "wound_sites": WoundSite,
         "consents": Consent,
-        "asha_workers": ASHAWorker,
+        "asha_workers": AshaWorker,
     }
     
     if query.table not in TABLE_MODEL_MAP:

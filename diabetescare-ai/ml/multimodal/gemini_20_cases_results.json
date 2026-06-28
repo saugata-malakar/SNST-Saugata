@@ -1,5 +1,5 @@
 {
-  "test_date": "2026-06-07T11:55:28.744418",
+  "test_date": "2026-06-08T10:41:40.970105",
   "total_cases": 20,
   "successful": 20,
   "failed": 0,
@@ -38,7 +38,7 @@
         "follow_up_days": 14,
         "specialist_referral": false
       },
-      "timestamp": "2026-06-07T06:25:28.690803"
+      "timestamp": "2026-06-08T05:11:40.943337"
     },
     {
       "case_id": 2,
@@ -74,7 +74,7 @@
         "follow_up_days": 14,
         "specialist_referral": false
       },
-      "timestamp": "2026-06-07T06:25:28.693803"
+      "timestamp": "2026-06-08T05:11:40.947006"
     },
     {
       "case_id": 3,
@@ -110,7 +110,7 @@
         "follow_up_days": 14,
         "specialist_referral": false
       },
-      "timestamp": "2026-06-07T06:25:28.695772"
+      "timestamp": "2026-06-08T05:11:40.948162"
     },
     {
       "case_id": 4,
@@ -146,7 +146,7 @@
         "follow_up_days": 14,
         "specialist_referral": false
       },
-      "timestamp": "2026-06-07T06:25:28.697784"
+      "timestamp": "2026-06-08T05:11:40.949377"
     },
     {
       "case_id": 5,
@@ -182,7 +182,7 @@
         "follow_up_days": 14,
         "specialist_referral": false
       },
-      "timestamp": "2026-06-07T06:25:28.701881"
+      "timestamp": "2026-06-08T05:11:40.950683"
     },
     {
       "case_id": 6,
@@ -218,7 +218,7 @@
         "follow_up_days": 14,
         "specialist_referral": false
       },
-      "timestamp": "2026-06-07T06:25:28.703893"
+      "timestamp": "2026-06-08T05:11:40.953097"
     },
     {
       "case_id": 7,
@@ -254,7 +254,7 @@
         "follow_up_days": 14,
         "specialist_referral": false
       },
-      "timestamp": "2026-06-07T06:25:28.705893"
+      "timestamp": "2026-06-08T05:11:40.954227"
     },
     {
       "case_id": 8,
@@ -290,7 +290,7 @@
         "follow_up_days": 14,
         "specialist_referral": false
       },
-      "timestamp": "2026-06-07T06:25:28.710028"
+      "timestamp": "2026-06-08T05:11:40.954827"
     },
     {
       "case_id": 9,
@@ -326,7 +326,7 @@
         "follow_up_days": 3,
         "specialist_referral": true
       },
-      "timestamp": "2026-06-07T06:25:28.712147"
+      "timestamp": "2026-06-08T05:11:40.956035"
     },
     {
       "case_id": 10,
@@ -362,7 +362,7 @@
         "follow_up_days": 14,
         "specialist_referral": false
       },
-      "timestamp": "2026-06-07T06:25:28.716148"
+      "timestamp": "2026-06-08T05:11:40.956606"
     },
     {
       "case_id": 11,
@@ -398,7 +398,7 @@
         "follow_up_days": 3,
         "specialist_referral": true
       },
-      "timestamp": "2026-06-07T06:25:28.718146"
+      "timestamp": "2026-06-08T05:11:40.957193"
     },
     {
       "case_id": 12,
@@ -434,7 +434,7 @@
         "follow_up_days": 3,
         "specialist_referral": true
       },
-      "timestamp": "2026-06-07T06:25:28.720147"
+      "timestamp": "2026-06-08T05:11:40.958373"
     },
     {
       "case_id": 13,
@@ -470,7 +470,7 @@
         "follow_up_days": 3,
         "specialist_referral": true
       },
-      "timestamp": "2026-06-07T06:25:28.723149"
+      "timestamp": "2026-06-08T05:11:40.960084"
     },
     {
       "case_id": 14,
@@ -506,7 +506,7 @@
         "follow_up_days": 3,
         "specialist_referral": true
       },
-      "timestamp": "2026-06-07T06:25:28.726150"
+      "timestamp": "2026-06-08T05:11:40.961290"
     },
     {
       "case_id": 15,
@@ -542,7 +542,7 @@
         "follow_up_days": 3,
         "specialist_referral": true
       },
-      "timestamp": "2026-06-07T06:25:28.728462"
+      "timestamp": "2026-06-08T05:11:40.962452"
     },
     {
       "case_id": 16,
@@ -578,7 +578,7 @@
         "follow_up_days": 3,
         "specialist_referral": true
       },
-      "timestamp": "2026-06-07T06:25:28.730980"
+      "timestamp": "2026-06-08T05:11:40.963659"
     },
     {
       "case_id": 17,
@@ -614,7 +614,7 @@
         "follow_up_days": 3,
         "specialist_referral": true
       },
-      "timestamp": "2026-06-07T06:25:28.734132"
+      "timestamp": "2026-06-08T05:11:40.964742"
     },
     {
       "case_id": 18,
@@ -650,7 +650,7 @@
         "follow_up_days": 3,
         "specialist_referral": true
       },
-      "timestamp": "2026-06-07T06:25:28.736232"
+      "timestamp": "2026-06-08T05:11:40.967134"
     },
     {
       "case_id": 19,
@@ -686,7 +686,7 @@
         "follow_up_days": 3,
         "specialist_referral": true
       },
-      "timestamp": "2026-06-07T06:25:28.739900"
+      "timestamp": "2026-06-08T05:11:40.968284"
     },
     {
       "case_id": 20,
@@ -722,7 +722,7 @@
         "follow_up_days": 3,
         "specialist_referral": true
       },
-      "timestamp": "2026-06-07T06:25:28.742396"
+      "timestamp": "2026-06-08T05:11:40.968898"
     }
   ]
 }

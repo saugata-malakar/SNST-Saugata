@@ -41,10 +41,10 @@ class WoundSeverityModelFL(nn.Module):
         
         # Replace classifier head for our task
         self.backbone.classifier = nn.Sequential(
-            nn.Dropout(p=dropout_rate, inplace=True),
+            nn.Dropout(p=dropout_rate, inplace=False),
             nn.Linear(num_features, 256),
-            nn.ReLU(inplace=True),
-            nn.Dropout(p=dropout_rate / 2, inplace=True),
+            nn.ReLU(inplace=False),
+            nn.Dropout(p=dropout_rate / 2, inplace=False),
             nn.Linear(256, num_classes)
         )
         
@@ -91,7 +91,7 @@ def create_model(config) -> WoundSeverityModelFL:
     """Create and initialize model for FL."""
     model = WoundSeverityModelFL(
         num_classes=config.num_classes,
-        pretrained=True,
+        pretrained=False,
         dropout_rate=0.3
     )
     model.to(config.device)

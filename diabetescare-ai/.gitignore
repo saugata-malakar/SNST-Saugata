@@ -53,3 +53,8 @@ models/
 *.h5
 *.onnx
 SNST-Saugata/
+*.db
+scratch/
+convert_pdfs.ps1
+create_reports.py
+create_detailed_reports.py

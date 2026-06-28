@@ -1,361 +1,187 @@
 """
 Multimodal AI Analysis API Router
-Week 4 - Saugata Malakar
+Part 10 Deliverable — Saugata Malakar
 
-Combines wound photograph + clinical data (HbA1c, diabetes duration, BP)
-using Gemini 1.5 Pro Vision for richer severity assessment.
-
-Endpoints:
-- POST /api/v1/multimodal/analyze - Single case analysis
-- POST /api/v1/multimodal/analyze-batch - Batch analysis (up to 20 cases)
-- GET /api/v1/multimodal/analysis/{analysis_id} - Retrieve stored analysis
-
-Owner: Saugata Malakar
+Combines base64 wound photograph + clinical metadata and calls
+Gemini 1.5 Pro to return structured assessments.
 """
 
-from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from datetime import datetime
-from PIL import Image
-import io
 import logging
 import uuid
+from sqlalchemy.orm import Session
 
 from ml.multimodal.gemini_multimodal import (
-    GeminiMultimodalAPI, 
-    MultimodalAnalysisRequest, 
-    MultimodalAnalysisResponse
+    GeminiMultimodalAPI,
+    GeminiWoundAssessment,
+    create_gemini_api
 )
-from backend.utils.config import get_settings
+from backend.database.session import get_db
 from backend.database.models import MultimodalAnalysis, Patient, MonitoringSession
-from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/multimodal", tags=["multimodal"])
 
 
-# Pydantic models for request/response
-
 class MultimodalAnalyzeRequest(BaseModel):
-    """Request for multimodal analysis"""
+    """Request bundle containing base64 photograph + patient metadata."""
+    image_base64: str = Field(..., description="Base64-encoded wound photograph (JPEG/PNG)")
     patient_id: str = Field(..., description="Patient UUID")
     session_id: Optional[str] = Field(None, description="Monitoring session UUID")
-    hba1c: float = Field(..., ge=4.0, le=15.0, description="HbA1c level (%) - range 4-15")
-    diabetes_duration: int = Field(..., ge=0, le=60, description="Years with diabetes")
+    hba1c: float = Field(..., ge=4.0, le=15.0, description="HbA1c level (%)")
+    diabetes_duration_years: int = Field(..., ge=0, le=60, description="Years with diabetes")
     systolic_bp: int = Field(..., ge=70, le=250, description="Systolic BP (mmHg)")
     diastolic_bp: int = Field(..., ge=40, le=150, description="Diastolic BP (mmHg)")
-    age: Optional[int] = Field(None, ge=0, le=120, description="Patient age")
-    gender: Optional[str] = Field(None, description="Patient gender")
-    
+
     class Config:
         json_schema_extra = {
             "example": {
+                "image_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=",
                 "patient_id": "123e4567-e89b-12d3-a456-426614174000",
                 "session_id": "223e4567-e89b-12d3-a456-426614174001",
                 "hba1c": 9.2,
-                "diabetes_duration": 12,
+                "diabetes_duration_years": 12,
                 "systolic_bp": 145,
-                "diastolic_bp": 92,
-                "age": 58,
-                "gender": "male"
-            }
-        }
-
-
-class MultimodalAnalyzeResponse(BaseModel):
-    """Response from multimodal analysis"""
-    analysis_id: str
-    patient_id: str
-    session_id: Optional[str]
-    
-    # Assessment results
-    severity_grade: int
-    severity_label: str
-    confidence: float
-    tissue_assessment: str
-    infection_risk: str
-    healing_prognosis: str
-    
-    # Clinical insights
-    clinical_insights: List[str]
-    risk_factors: List[str]
-    immediate_actions: List[str]
-    
-    follow_up_days: int
-    specialist_referral: bool
-    
-    timestamp: str
-    model_name: str = "gemini-1.5-pro"
-    
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "analysis_id": "323e4567-e89b-12d3-a456-426614174002",
-                "patient_id": "123e4567-e89b-12d3-a456-426614174000",
-                "session_id": "223e4567-e89b-12d3-a456-426614174001",
-                "severity_grade": 3,
-                "severity_label": "Grade 3: Deep ulcer with abscess or osteomyelitis",
-                "confidence": 0.87,
-                "tissue_assessment": "Mixed granulation and necrotic tissue with signs of infection",
-                "infection_risk": "high",
-                "healing_prognosis": "poor",
-                "clinical_insights": [
-                    "HbA1c of 9.2% indicates poor glycemic control",
-                    "Long diabetes duration of 12 years increases complication risk",
-                    "Elevated blood pressure suggests vascular complications"
-                ],
-                "risk_factors": [
-                    "Elevated HbA1c",
-                    "Long-standing diabetes",
-                    "Hypertension"
-                ],
-                "immediate_actions": [
-                    "Start IV antibiotics immediately",
-                    "Surgical debridement required",
-                    "Optimize glycemic control"
-                ],
-                "follow_up_days": 3,
-                "specialist_referral": True,
-                "timestamp": "2024-01-15T10:30:00Z",
-                "model_name": "gemini-1.5-pro"
-            }
-        }
-
-
-class BatchAnalyzeRequest(BaseModel):
-    """Request for batch analysis (multiple cases)"""
-    cases: List[MultimodalAnalyzeRequest] = Field(..., max_length=20, description="Up to 20 cases")
-    
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "cases": [
-                    {
-                        "patient_id": "123e4567-e89b-12d3-a456-426614174000",
-                        "hba1c": 9.2,
-                        "diabetes_duration": 12,
-                        "systolic_bp": 145,
-                        "diastolic_bp": 92,
-                        "age": 58,
-                        "gender": "male"
-                    }
-                ]
+                "diastolic_bp": 92
             }
         }
 
 
 # Dependency: Get Gemini API instance
-
-def get_gemini_api():
-    """Get Gemini multimodal API instance"""
-    settings = get_settings()
-    api = GeminiMultimodalAPI(api_key=settings.GEMINI_API_KEY)
-    return api
+def get_gemini_api() -> GeminiMultimodalAPI:
+    """Dependency to retrieve configured Gemini Multimodal API instance."""
+    return create_gemini_api()
 
 
-# Dependency: Get database session (mock for now)
-
-def get_db():
-    """Get database session - to be implemented with proper DB connection"""
-    # TODO: Implement proper database session
-    # For now, return None - will implement database storage later
-    return None
-
-
-# Endpoints
-
-@router.post("/analyze", response_model=MultimodalAnalyzeResponse)
+@router.post("/analyze", response_model=GeminiWoundAssessment)
 async def analyze_multimodal(
-    image: UploadFile = File(..., description="Wound photograph (JPEG/PNG)"),
-    patient_id: str = Form(...),
-    hba1c: float = Form(..., ge=4.0, le=15.0),
-    diabetes_duration: int = Form(..., ge=0, le=60),
-    systolic_bp: int = Form(..., ge=70, le=250),
-    diastolic_bp: int = Form(..., ge=40, le=150),
-    session_id: Optional[str] = Form(None),
-    age: Optional[int] = Form(None),
-    gender: Optional[str] = Form(None),
+    request: MultimodalAnalyzeRequest,
     gemini_api: GeminiMultimodalAPI = Depends(get_gemini_api),
     db: Session = Depends(get_db)
 ):
     """
-    Perform multimodal analysis on wound photograph + clinical data.
+    Perform multimodal wound clinical assessment using Gemini 1.5 Pro.
     
-    **Input:**
-    - image: Wound photograph file
+    **Inputs:**
+    - image_base64: Base64-encoded wound photograph
     - patient_id: Patient UUID
-    - hba1c: HbA1c level (%)
-    - diabetes_duration: Years with diabetes
-    - systolic_bp: Systolic blood pressure (mmHg)
-    - diastolic_bp: Diastolic blood pressure (mmHg)
     - session_id: Optional monitoring session UUID
-    - age: Optional patient age
-    - gender: Optional patient gender
+    - hba1c: HbA1c level (%)
+    - diabetes_duration_years: Years with diabetes
+    - systolic_bp: Systolic BP
+    - diastolic_bp: Diastolic BP
     
-    **Output:**
-    - Comprehensive severity assessment
-    - Tissue analysis
-    - Infection risk
-    - Healing prognosis
-    - Clinical insights and recommendations
-    
-    **Week 4 - Saugata Malakar**
+    **Outputs:**
+    - wound_severity_assessment: Detailed Wagner grade classification
+    - confidence_level: low, medium, or high
+    - recommended_action: Immediate recommended actions
+    - clinical_flags: List of clinical flags (e.g. infection risk, gangrene)
     """
     try:
-        # Validate image format
-        if image.content_type not in ["image/jpeg", "image/jpg", "image/png"]:
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Invalid image format: {image.content_type}. Use JPEG or PNG."
-            )
+        logger.info(f"Processing multimodal JSON request for patient {request.patient_id}")
         
-        # Read and parse image
-        image_bytes = await image.read()
-        pil_image = Image.open(io.BytesIO(image_bytes))
+        # Build metadata dictionary
+        metadata = {
+            "hba1c": request.hba1c,
+            "diabetes_duration_years": request.diabetes_duration_years,
+            "systolic_bp": request.systolic_bp,
+            "diastolic_bp": request.diastolic_bp
+        }
         
-        # Convert to RGB if needed
-        if pil_image.mode != "RGB":
-            pil_image = pil_image.convert("RGB")
-        
-        logger.info(f"Processing multimodal analysis for patient {patient_id}")
-        
-        # Build request
-        request = MultimodalAnalysisRequest(
-            image=pil_image,
-            hba1c=hba1c,
-            diabetes_duration=diabetes_duration,
-            systolic_bp=systolic_bp,
-            diastolic_bp=diastolic_bp,
-            patient_id=patient_id,
-            age=age,
-            gender=gender
+        # Call Gemini API wrapper
+        result: GeminiWoundAssessment = await gemini_api.analyze_base64_and_metadata(
+            base64_image=request.image_base64,
+            metadata=metadata
         )
         
-        # Call Gemini API
-        result = await gemini_api.analyze_multimodal(request)
+        # Parse UUIDs
+        try:
+            patient_uuid = uuid.UUID(request.patient_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid patient_id UUID format")
+            
+        # Parse or generate session UUID
+        session_uuid = None
+        if request.session_id:
+            try:
+                session_uuid = uuid.UUID(request.session_id)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid session_id UUID format")
         
-        # Generate analysis ID
-        analysis_id = str(uuid.uuid4())
-        
-        # TODO: Store in database
-        # if db:
-        #     db_analysis = MultimodalAnalysis(
-        #         analysis_id=uuid.UUID(analysis_id),
-        #         patient_id=uuid.UUID(patient_id),
-        #         session_id=uuid.UUID(session_id) if session_id else None,
-        #         hba1c=hba1c,
-        #         diabetes_duration_years=diabetes_duration,
-        #         systolic_bp=systolic_bp,
-        #         diastolic_bp=diastolic_bp,
-        #         severity_grade=result.severity_grade,
-        #         severity_label=result.severity_label,
-        #         confidence=result.confidence,
-        #         tissue_assessment=result.tissue_assessment,
-        #         infection_risk=result.infection_risk,
-        #         healing_prognosis=result.healing_prognosis,
-        #         clinical_insights=result.clinical_insights,
-        #         risk_factors=result.risk_factors,
-        #         immediate_actions=result.immediate_actions,
-        #         follow_up_days=result.follow_up_days,
-        #         specialist_referral=result.specialist_referral,
-        #         raw_response=result.raw_response
-        #     )
-        #     db.add(db_analysis)
-        #     db.commit()
-        
-        # Build response
-        response = MultimodalAnalyzeResponse(
-            analysis_id=analysis_id,
-            patient_id=patient_id,
-            session_id=session_id,
-            severity_grade=result.severity_grade,
-            severity_label=result.severity_label,
-            confidence=result.confidence,
-            tissue_assessment=result.tissue_assessment,
-            infection_risk=result.infection_risk,
-            healing_prognosis=result.healing_prognosis,
-            clinical_insights=result.clinical_insights,
-            risk_factors=result.risk_factors,
-            immediate_actions=result.immediate_actions,
-            follow_up_days=result.follow_up_days,
-            specialist_referral=result.specialist_referral,
-            timestamp=result.timestamp
-        )
-        
-        logger.info(f"✓ Multimodal analysis complete: {analysis_id}")
-        
-        return response
+        # Save to database if patient and session exist (or use generated fallback session)
+        try:
+            # Check patient existence
+            patient_exists = db.query(Patient).filter(Patient.patient_id == patient_uuid).first()
+            if patient_exists:
+                # If session_uuid is not provided or doesn't exist, retrieve or create a mock session
+                if not session_uuid:
+                    session = db.query(MonitoringSession).filter(MonitoringSession.patient_id == patient_uuid).first()
+                    if session:
+                        session_uuid = session.session_id
+                    else:
+                        # Create a mock session to avoid ForeignKey violation
+                        new_session = MonitoringSession(
+                            session_id=uuid.uuid4(),
+                            patient_id=patient_uuid,
+                            created_at=datetime.utcnow()
+                        )
+                        db.add(new_session)
+                        db.commit()
+                        session_uuid = new_session.session_id
+                
+                # Parse rule-based fields from severity assessment for table storage
+                # Map confidence string back to float
+                conf_val = 0.90 if result.confidence_level == "high" else 0.70 if result.confidence_level == "medium" else 0.40
+                
+                # Save analysis record
+                analysis_record = MultimodalAnalysis(
+                    analysis_id=uuid.uuid4(),
+                    patient_id=patient_uuid,
+                    session_id=session_uuid,
+                    hba1c=request.hba1c,
+                    diabetes_duration_years=request.diabetes_duration_years,
+                    systolic_bp=request.systolic_bp,
+                    diastolic_bp=request.diastolic_bp,
+                    severity_grade=3 if "grade 3" in result.wound_severity_assessment.lower() else 1,
+                    severity_label=result.wound_severity_assessment[:250],
+                    confidence=conf_val,
+                    tissue_assessment=result.wound_severity_assessment,
+                    infection_risk="high" if "high" in result.wound_severity_assessment.lower() else "low",
+                    healing_prognosis="poor" if "high" in result.wound_severity_assessment.lower() else "good",
+                    clinical_insights=[result.wound_severity_assessment],
+                    risk_factors=result.clinical_flags,
+                    immediate_actions=[result.recommended_action],
+                    follow_up_days=3 if "urgent" in result.recommended_action.lower() else 14,
+                    specialist_referral="urgent" in result.recommended_action.lower(),
+                    raw_response=json.dumps(result.model_dump()),
+                    model_name="gemini-1.5-pro",
+                    created_at=datetime.utcnow()
+                )
+                
+                db.add(analysis_record)
+                db.commit()
+                logger.info(f"✓ Multimodal analysis record persisted to DB: {analysis_record.analysis_id}")
+        except Exception as db_err:
+            db.rollback()
+            logger.warning(f"Could not persist analysis record to DB (possibly mock environment): {db_err}")
+            
+        return result
         
     except Exception as e:
-        logger.error(f"Multimodal analysis failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
-
-
-@router.get("/analysis/{analysis_id}")
-async def get_analysis(
-    analysis_id: str,
-    db: Session = Depends(get_db)
-):
-    """
-    Retrieve stored multimodal analysis by ID.
-    
-    **Input:**
-    - analysis_id: UUID of stored analysis
-    
-    **Output:**
-    - Complete analysis result
-    
-    **Week 4 - Saugata Malakar**
-    """
-    # TODO: Implement database retrieval
-    # For now, return not implemented
-    raise HTTPException(
-        status_code=501, 
-        detail="Analysis retrieval not yet implemented. Database integration pending."
-    )
-
-
-@router.post("/analyze-batch")
-async def analyze_batch(
-    request: BatchAnalyzeRequest,
-    gemini_api: GeminiMultimodalAPI = Depends(get_gemini_api)
-):
-    """
-    Batch analysis for multiple cases (up to 20).
-    
-    **Note:** This endpoint requires images to be sent separately.
-    For testing purposes, use the single analyze endpoint.
-    
-    **Input:**
-    - cases: List of analysis requests (without images)
-    
-    **Output:**
-    - List of analysis results
-    
-    **Week 4 - Saugata Malakar**
-    """
-    raise HTTPException(
-        status_code=501,
-        detail="Batch analysis endpoint not fully implemented. Use /analyze for single cases."
-    )
+        logger.error(f"Multimodal analysis endpoint failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Multimodal assessment failed: {str(e)}")
 
 
 @router.get("/health")
 async def health_check(gemini_api: GeminiMultimodalAPI = Depends(get_gemini_api)):
-    """
-    Check if multimodal API is ready.
-    
-    **Output:**
-    - status: "ready" or "mock_mode"
-    - gemini_available: boolean
-    - model_initialized: boolean
-    """
+    """Check Gemini service status."""
     return {
         "status": "ready" if gemini_api.model else "mock_mode",
         "gemini_available": gemini_api.model is not None,
-        "model_initialized": gemini_api.model is not None,
         "model_name": "gemini-1.5-pro" if gemini_api.model else "mock",
-        "message": "Multimodal API is operational" if gemini_api.model else "Running in mock mode (GEMINI_API_KEY not set)"
+        "message": "Multimodal endpoint is ready"
     }

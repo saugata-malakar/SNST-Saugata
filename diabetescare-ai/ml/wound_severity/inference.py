@@ -58,8 +58,13 @@ class WoundSeverityInference:
         self.model_path = model_path
         self.confidence_threshold = confidence_threshold
         
+        # Check if TFLite model is used
+        self.is_tflite = model_path.endswith('.tflite')
+        
         # Set device
-        if device == "auto":
+        if self.is_tflite:
+            self.device = "cpu"
+        elif device == "auto":
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         else:
             self.device = torch.device(device)
@@ -115,15 +120,27 @@ class WoundSeverityInference:
         
         logger.info("Wound severity inference pipeline initialized")
     
-    def _load_model(self) -> WoundSeverityModel:
+    def _load_model(self):
         """Load trained model from checkpoint."""
-        try:
-            model = load_pretrained_model(self.model_path, device=str(self.device))
-            logger.info(f"Model loaded successfully from {self.model_path}")
-            return model
-        except Exception as e:
-            logger.error(f"Failed to load model from {self.model_path}: {str(e)}")
-            raise
+        if self.is_tflite:
+            try:
+                import ai_edge_litert.interpreter as litert
+                logger.info(f"Loading TFLite model from {self.model_path}")
+                interpreter = litert.Interpreter(model_path=self.model_path)
+                interpreter.allocate_tensors()
+                logger.info(f"TFLite Model loaded successfully from {self.model_path}")
+                return interpreter
+            except Exception as e:
+                logger.error(f"Failed to load TFLite model from {self.model_path}: {str(e)}")
+                raise
+        else:
+            try:
+                model = load_pretrained_model(self.model_path, device=str(self.device))
+                logger.info(f"Model loaded successfully from {self.model_path}")
+                return model
+            except Exception as e:
+                logger.error(f"Failed to load model from {self.model_path}: {str(e)}")
+                raise
     
     def _create_transform(self) -> transforms.Compose:
         """Create image preprocessing transform."""
@@ -194,15 +211,38 @@ class WoundSeverityInference:
             # Inference
             start_time = datetime.now()
             
-            with torch.no_grad():
-                self.model.eval()
-                logits = self.model(input_tensor)
-                probabilities = F.softmax(logits, dim=1)
+            if self.is_tflite:
+                input_details = self.model.get_input_details()
+                output_details = self.model.get_output_details()
+                input_index = input_details[0]['index']
+                output_index = output_details[0]['index']
                 
-                # Get prediction
-                confidence, predicted_class = torch.max(probabilities, dim=1)
-                predicted_class = predicted_class.item()
-                confidence = confidence.item()
+                # Preprocessed input is PyTorch NCHW format, TFLite expects NHWC format
+                input_np = input_tensor.cpu().numpy()
+                input_nhwc = np.transpose(input_np, (0, 2, 3, 1))
+                
+                self.model.set_tensor(input_index, input_nhwc)
+                self.model.invoke()
+                output_logits = self.model.get_tensor(output_index)
+                
+                # Custom softmax
+                e_x = np.exp(output_logits - np.max(output_logits, axis=-1, keepdims=True))
+                probabilities_np = (e_x / e_x.sum(axis=-1, keepdims=True))[0]
+                
+                confidence = float(np.max(probabilities_np))
+                predicted_class = int(np.argmax(probabilities_np))
+                probs_list = probabilities_np.tolist()
+            else:
+                with torch.no_grad():
+                    self.model.eval()
+                    logits = self.model(input_tensor)
+                    probabilities = F.softmax(logits, dim=1)
+                    
+                    # Get prediction
+                    confidence, predicted_class = torch.max(probabilities, dim=1)
+                    predicted_class = predicted_class.item()
+                    confidence = confidence.item()
+                    probs_list = probabilities[0].cpu().numpy().tolist()
             
             inference_time = (datetime.now() - start_time).total_seconds() * 1000  # ms
             
@@ -219,14 +259,14 @@ class WoundSeverityInference:
                 "high_confidence": confidence >= self.confidence_threshold,
                 "class_probabilities": {
                     f"grade_{i}": round(prob, 4) 
-                    for i, prob in enumerate(probabilities[0].cpu().numpy())
+                    for i, prob in enumerate(probs_list)
                 },
                 "metadata": {
                     "model_version": "wound_severity_v1.0",
                     "inference_time_ms": round(inference_time, 2),
                     "image_hash": image_hash,
                     "timestamp": datetime.now().isoformat(),
-                    "device": str(self.device)
+                    "device": "tflite_cpu" if self.is_tflite else str(self.device)
                 }
             }
             
@@ -254,6 +294,9 @@ class WoundSeverityInference:
         Returns:
             List of prediction results
         """
+        if self.is_tflite:
+            return [self.predict_single(image) for image in images]
+            
         results = []
         
         try:

@@ -13,6 +13,7 @@ Uses custom entity ruler with medical terminology patterns.
 import spacy
 from spacy.pipeline import EntityRuler
 from spacy.tokens import Doc, Span
+from spacy.matcher import DependencyMatcher
 from typing import Dict, List, Optional, Any
 import json
 import logging
@@ -189,10 +190,109 @@ class ClinicalNLPPipeline:
             logger.info(f"✓ Added custom entity ruler with {len(WOUND_LOCATION_PATTERNS) + len(INFECTION_SIGN_PATTERNS) + len(TREATMENT_RECOMMENDATION_PATTERNS)} patterns")
         
         self.nlp.max_length = 2000000  # Allow longer documents
+        
+        # Initialize DependencyMatcher for negation detection
+        self.dep_matcher = DependencyMatcher(self.nlp.vocab)
+        self._add_negation_patterns()
+    
+    def _add_negation_patterns(self):
+        """Add negation patterns to the DependencyMatcher."""
+        # Direct negation pattern: e.g., "no cellulitis", "not red"
+        direct_neg_pattern = [
+            {
+                "RIGHT_ID": "entity",
+                "RIGHT_ATTRS": {"POS": {"IN": ["NOUN", "PROPN", "ADJ", "VERB"]}}
+            },
+            {
+                "LEFT_ID": "entity",
+                "REL_OP": ">",
+                "RIGHT_ID": "negator",
+                "RIGHT_ATTRS": {"DEP": {"IN": ["neg", "det"]}, "LOWER": {"IN": ["no", "not", "never", "none", "neither", "nor", "lack", "lacks"]}}
+            }
+        ]
+        
+        # Prepositional negation pattern: e.g., "without cellulitis"
+        prep_neg_pattern = [
+            {
+                "RIGHT_ID": "negator",
+                "RIGHT_ATTRS": {"LOWER": {"IN": ["without", "sans"]}}
+            },
+            {
+                "LEFT_ID": "negator",
+                "REL_OP": ">",
+                "RIGHT_ID": "entity",
+                "RIGHT_ATTRS": {"DEP": "pobj"}
+            }
+        ]
+        
+        # Prep negation pattern with "free/clear of": e.g., "free of cellulitis"
+        free_of_neg_pattern = [
+            {
+                "RIGHT_ID": "negator",
+                "RIGHT_ATTRS": {"LOWER": {"IN": ["free", "clear"]}}
+            },
+            {
+                "LEFT_ID": "negator",
+                "REL_OP": ">",
+                "RIGHT_ID": "prep",
+                "RIGHT_ATTRS": {"DEP": "prep", "LOWER": "of"}
+            },
+            {
+                "LEFT_ID": "prep",
+                "REL_OP": ">",
+                "RIGHT_ID": "entity",
+                "RIGHT_ATTRS": {"DEP": "pobj"}
+            }
+        ]
+        
+        # Subject/Verb negation pattern: e.g., "denies cellulitis", "rules out osteomyelitis"
+        verb_neg_pattern = [
+            {
+                "RIGHT_ID": "negator",
+                "RIGHT_ATTRS": {"LOWER": {"IN": ["deny", "denies", "denied", "exclude", "excludes", "excluded", "rule", "rules", "ruled"]}}
+            },
+            {
+                "LEFT_ID": "negator",
+                "REL_OP": ">",
+                "RIGHT_ID": "entity",
+                "RIGHT_ATTRS": {"DEP": {"IN": ["dobj", "nsubjpass", "conj", "pobj"]}}
+            }
+        ]
+
+        self.dep_matcher.add("DIRECT_NEGATION", [direct_neg_pattern])
+        self.dep_matcher.add("PREP_NEGATION", [prep_neg_pattern])
+        self.dep_matcher.add("FREE_OF_NEGATION", [free_of_neg_pattern])
+        self.dep_matcher.add("VERB_NEGATION", [verb_neg_pattern])
+
+    def get_negated_token_indices(self, doc) -> set:
+        """Find indices of tokens that are negated according to dependency patterns."""
+        negated_indices = set()
+        matches = self.dep_matcher(doc)
+        for match_id, token_ids in matches:
+            pattern_name = self.nlp.vocab.strings[match_id]
+            if pattern_name == "DIRECT_NEGATION":
+                negated_indices.add(token_ids[0])
+            elif pattern_name == "PREP_NEGATION":
+                negated_indices.add(token_ids[1])
+            elif pattern_name == "FREE_OF_NEGATION":
+                negated_indices.add(token_ids[2])
+            elif pattern_name == "VERB_NEGATION":
+                negated_indices.add(token_ids[1])
+        return negated_indices
+
+    def is_negated(self, doc, ent, negated_indices) -> bool:
+        """Check if any token in the entity or its ancestors is negated."""
+        for token in ent:
+            if token.i in negated_indices:
+                return True
+            for ancestor in token.ancestors:
+                if ancestor.i in negated_indices:
+                    return True
+        return False
     
     def extract_entities(self, text: str) -> Dict[str, List[str]]:
         """
-        Extract structured entities from clinical notes.
+        Extract structured entities from clinical notes, filtering out negated entities.
         
         Args:
             text: Free-text clinical notes
@@ -201,6 +301,7 @@ class ClinicalNLPPipeline:
             Dictionary with extracted entities
         """
         doc = self.nlp(text)
+        negated_indices = self.get_negated_token_indices(doc)
         
         # Organize entities by type
         entities = {
@@ -210,6 +311,10 @@ class ClinicalNLPPipeline:
         }
         
         for ent in doc.ents:
+            if self.is_negated(doc, ent, negated_indices):
+                logger.info(f"Filtered out negated entity: '{ent.text}' ({ent.label_})")
+                continue
+                
             if ent.label_ == "WOUND_LOCATION":
                 if ent.text not in entities["wound_location"]:
                     entities["wound_location"].append(ent.text)

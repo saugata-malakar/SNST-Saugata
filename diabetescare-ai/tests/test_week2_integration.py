@@ -118,7 +118,20 @@ class TestWeek2ErasureWorkflow:
     def erasure_pipeline(self):
         """Mock erasure pipeline (actual DB not required for unit test)."""
         
+        class MockResult:
+            def scalar(self):
+                return 0
+                
+        class MockDialect:
+            name = "sqlite"
+
+        class MockBind:
+            dialect = MockDialect()
+
         class MockSession:
+            bind = MockBind()
+            def execute(self, query, params=None):
+                return MockResult()
             def commit(self): pass
             def rollback(self): pass
         
@@ -149,19 +162,17 @@ class TestWeek2ErasureWorkflow:
 
     def test_erasure_request_metadata(self, erasure_pipeline):
         """Erasure request should contain proper metadata."""
-        request = erasure_pipeline.request_erasure("pat-123")
+        request_id = erasure_pipeline.request_erasure("pat-123")
         
-        assert request["patient_id"] == "pat-123"
-        assert request["status"] == "pending"
-        assert "requested_at" in request
-        assert request["initiator"] == "system"
+        assert isinstance(request_id, str)
+        assert len(request_id) == 36  # UUID length
 
     def test_dry_run_erasure_no_commit(self, erasure_pipeline):
         """Dry-run should not commit changes."""
         report = erasure_pipeline.execute_erasure("pat-test", dry_run=True)
         
         assert report["dry_run"] is True
-        assert report["status"] == "completed"
+        assert report["status"] == "success"
         # In actual test with DB, would verify no records deleted
 
 

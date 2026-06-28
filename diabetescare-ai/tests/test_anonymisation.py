@@ -120,7 +120,7 @@ class TestAgeGeneralization:
 
     def test_invalid_age(self, engine):
         """Invalid age should return 'unknown'."""
-        assert engine.generalise_age(200) == "75+"
+        assert engine.generalise_age(200) == "unknown"
 
 
 class TestDiabetesDurationGeneralization:
