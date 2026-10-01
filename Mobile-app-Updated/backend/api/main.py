@@ -58,13 +58,11 @@ app.add_middleware(
 import sqlite3
 
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-# If ROOT_DIR is Mobile-app-Updated, use workspace root
-if os.path.basename(ROOT_DIR) == "Mobile-app-Updated":
-    ROOT_DIR = os.path.dirname(ROOT_DIR)
 
-STORED_PHOTOS_DIR = os.path.join(ROOT_DIR, "stored_photos")
-DB_PATH = os.path.join(ROOT_DIR, "diabetescare.db")
-ALT_DB_PATH = os.path.join(ROOT_DIR, "diabetescare-ai", "diabetescare.db")
+# Resolve storage directory checking both local Mobile-app-Updated and parent workspace
+_local_photos = os.path.join(ROOT_DIR, "stored_photos")
+_parent_photos = os.path.join(os.path.dirname(ROOT_DIR), "stored_photos")
+STORED_PHOTOS_DIR = _local_photos if os.path.exists(_local_photos) or os.path.basename(ROOT_DIR) == "Mobile-app-Updated" else _parent_photos
 os.makedirs(STORED_PHOTOS_DIR, exist_ok=True)
 
 # Mount stored photos for direct browser / doctor viewing
@@ -72,11 +70,17 @@ app.mount("/stored_photos", StaticFiles(directory=STORED_PHOTOS_DIR), name="stor
 
 def _get_target_databases():
     dbs = []
-    for p in [DB_PATH, ALT_DB_PATH]:
-        if os.path.exists(p):
+    candidates = [
+        os.path.join(ROOT_DIR, "diabetescare.db"),
+        os.path.join(os.path.dirname(ROOT_DIR), "diabetescare.db"),
+        os.path.join(ROOT_DIR, "diabetescare-ai", "diabetescare.db"),
+        os.path.join(os.path.dirname(ROOT_DIR), "diabetescare-ai", "diabetescare.db"),
+    ]
+    for p in candidates:
+        if os.path.exists(p) and p not in dbs:
             dbs.append(p)
     if not dbs:
-        dbs.append(DB_PATH)
+        dbs.append(os.path.join(ROOT_DIR, "diabetescare.db"))
     return dbs
 
 # ── Production ML Wound Severity Model (EfficientNet-B0 / Wagner 0-5) ─────────
