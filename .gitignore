@@ -47,3 +47,8 @@ yarn-error.log*
 *.swp
 *.swo
 *~
+
+# Signing secrets (never commit release keystores)
+*.keystore
+!debug.keystore
+keystore.properties

@@ -29,12 +29,18 @@ class GUID(TypeDecorator):
 # ── Auth ──────────────────────────────────────────────────────────────────────
 class User(Base):
     __tablename__ = "users"
-    user_id      = Column(GUID(), primary_key=True, default=uuid.uuid4)
-    email        = Column(String(200), unique=True, nullable=False)
+    user_id         = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    email           = Column(String(200), unique=True, nullable=True)
+    phone           = Column(String(20), unique=True, nullable=True)
+    username        = Column(String(100), unique=True, nullable=True)
+    worker_id       = Column(String(100), unique=True, nullable=True)
+    full_name       = Column(String(200), nullable=True)
     hashed_password = Column(String(200), nullable=False)
-    role         = Column(String(20), default="field_worker")  # doctor | admin | field_worker
-    is_active    = Column(Boolean, default=True)
-    created_at   = Column(DateTime, default=datetime.utcnow)
+    role            = Column(String(20), default="field_worker")  # doctor | field_worker | moderator | admin
+    worker_type     = Column(String(20), nullable=True)           # ASHA | ICDS | CHO
+    district        = Column(String(100), nullable=True)
+    is_active       = Column(Boolean, default=True)
+    created_at      = Column(DateTime, default=datetime.utcnow)
 
 
 # ── Clinical ──────────────────────────────────────────────────────────────────
@@ -198,3 +204,103 @@ class TeleconsultBooking(Base):
     status      = Column(String(20), default="pending")  # pending | confirmed | completed | cancelled
     notes       = Column(Text)
     created_at  = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+# ── DiabetesCare AI v4.0 Submissions & Workflow ───────────────────────────────
+class Submission(Base):
+    """Central submission record for Doctor and ASHA/ICDS/CHO screening flows."""
+    __tablename__ = "submissions"
+    submission_id          = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    patient_id             = Column(String(100), nullable=False, index=True)
+    submitted_by_user_id   = Column(GUID(), ForeignKey("users.user_id"), nullable=False, index=True)
+    submitter_role         = Column(String(30), nullable=False)  # doctor | field_worker
+    status                 = Column(String(30), default="draft", index=True)
+    ai_quality_passed      = Column(Boolean, nullable=True)
+    ai_rejection_reason    = Column(Text, nullable=True)
+    moderator_id           = Column(GUID(), ForeignKey("users.user_id"), nullable=True)
+    doctor_id              = Column(GUID(), ForeignKey("users.user_id"), nullable=True)
+    patient_age            = Column(Integer, nullable=True)
+    patient_weight_kg      = Column(Float, nullable=True)
+    patient_bp_systolic    = Column(Integer, nullable=True)
+    patient_bp_diastolic   = Column(Integer, nullable=True)
+    patient_blood_sugar    = Column(Float, nullable=True)
+    patient_comorbidities  = Column(JSON, nullable=True)
+    patient_name           = Column(String(200), nullable=True)
+    created_at             = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at             = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    is_followup            = Column(Boolean, default=False)
+    original_submission_id = Column(GUID(), ForeignKey("submissions.submission_id"), nullable=True)
+
+    photos            = relationship("SubmissionPhoto",  back_populates="submission", cascade="all, delete-orphan")
+    reports           = relationship("SubmissionReport", back_populates="submission", cascade="all, delete-orphan")
+    clinical_notes    = relationship("ClinicalNote",     back_populates="submission", cascade="all, delete-orphan")
+    moderator_reviews = relationship("ModeratorReview",  back_populates="submission", cascade="all, delete-orphan")
+    payments          = relationship("Payment",          back_populates="submission", cascade="all, delete-orphan")
+
+
+class SubmissionPhoto(Base):
+    """Up to 3 photos per submission (1: distant, 2: medium, 3: close)."""
+    __tablename__ = "submission_photos"
+    photo_id      = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    submission_id = Column(GUID(), ForeignKey("submissions.submission_id"), nullable=False, index=True)
+    photo_number  = Column(Integer, nullable=False)      # 1 | 2 | 3
+    photo_data    = Column(Text, nullable=False)         # base64
+    photo_type    = Column(String(20), nullable=False)   # distant | medium | close
+    created_at    = Column(DateTime, default=datetime.utcnow)
+
+    submission = relationship("Submission", back_populates="photos")
+
+
+class SubmissionReport(Base):
+    """Optional uploaded previous medical reports."""
+    __tablename__ = "submission_reports"
+    report_id     = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    submission_id = Column(GUID(), ForeignKey("submissions.submission_id"), nullable=False, index=True)
+    file_data     = Column(Text, nullable=False)         # base64
+    file_name     = Column(String(255), nullable=False)
+    created_at    = Column(DateTime, default=datetime.utcnow)
+
+    submission = relationship("Submission", back_populates="reports")
+
+
+class ClinicalNote(Base):
+    """Doctor's clinical note (on own submission OR ASHA submission)."""
+    __tablename__ = "clinical_notes"
+    note_id          = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    submission_id    = Column(GUID(), ForeignKey("submissions.submission_id"), nullable=False, index=True)
+    doctor_user_id   = Column(GUID(), ForeignKey("users.user_id"), nullable=False)
+    diagnosis        = Column(Text, nullable=False)
+    severity         = Column(String(50), nullable=True)
+    treatment_needed = Column(Text, nullable=True)
+    medication       = Column(Text, nullable=True)
+    created_at       = Column(DateTime, default=datetime.utcnow)
+
+    submission = relationship("Submission", back_populates="clinical_notes")
+
+
+class ModeratorReview(Base):
+    """Moderator's review of an ASHA/ICDS/CHO submission."""
+    __tablename__ = "moderator_reviews"
+    review_id         = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    submission_id     = Column(GUID(), ForeignKey("submissions.submission_id"), nullable=False, index=True)
+    moderator_user_id = Column(GUID(), ForeignKey("users.user_id"), nullable=False)
+    decision          = Column(String(20), nullable=False)  # approved | rejected
+    rejection_reason  = Column(Text, nullable=True)
+    created_at        = Column(DateTime, default=datetime.utcnow)
+
+    submission = relationship("Submission", back_populates="moderator_reviews")
+
+
+class Payment(Base):
+    """Payment record per user per submission."""
+    __tablename__ = "payments"
+    payment_id    = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    submission_id = Column(GUID(), ForeignKey("submissions.submission_id"), nullable=False, index=True)
+    user_id       = Column(GUID(), ForeignKey("users.user_id"), nullable=False, index=True)
+    role          = Column(String(30), nullable=False)
+    amount        = Column(Float, nullable=False)
+    status        = Column(String(20), default="pending")  # pending | paid
+    paid_at       = Column(DateTime, nullable=True)
+    created_at    = Column(DateTime, default=datetime.utcnow, index=True)
+
+    submission = relationship("Submission", back_populates="payments")
