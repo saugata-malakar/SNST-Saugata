@@ -24,13 +24,14 @@ Master workspace for **DiabetesCare AI (v4.0.0)** developed with **IIT Kharagpur
 
 ---
 
-## 🔑 4-Role Workflow & Seeded Accounts
+## 🔑 4-Role + Patient Workflow, Admin Verification Gate & Seeded Accounts
 
-All 4 roles (**Doctor**, **ASHA / ICDS / CHO**, **Moderator**, **Admin**) support instant registration and multi-identifier login (**Email, Phone, Username, or Worker ID + Password**) across both the **Mobile App** and **Website**:
+All newly registered accounts (**Doctor**, **ASHA / ICDS / CHO**, **Moderator**, **Admin**, **Patient**) require **Admin verification (`✓ Verify & Approve`)** before they can sign in, across both the **Mobile App** and **Website**. Pre-seeded accounts support multi-identifier login (**Email, Phone, Username, or Worker ID + Password**):
 
 * **Doctor (`doctor@demo.in` / `DOC_IITKGP_01` / `9831000001` · `doctor123`)**: Patient details + 3 photos (camera or system image upload) + optional medical reports + mandatory 1–2 line clinical note → AI quality check → `₹80` (+ `₹20` helper). Also validates Moderator-approved ASHA records (`₹30`).
 * **ASHA / ICDS / CHO (`asha@demo.in` / `ASHA_WB_0042` / `9831000002` · `asha123`)**: Patient details + 3 photos (no diagnosis/medication) → AI quality check → Moderator review → Doctor validation → `₹50`.
 * **Moderator (`moderator@demo.in` / `MOD_MMCH_01` / `9831000004` · `mod123`)**: Reviews ASHA/ICDS/CHO submissions (3 photos + vitals + AI score) → Approve (`₹20`) or Reject with reason.
-* **Admin (`admin@hospital.in` / `ADMIN_MMCH_01` / `9831000005` · `admin123`)**: Full Admin Panel — user management, all submissions & photo inspector, override decisions, payout ledger (`₹` rates & CSV export), and audit logs.
+* **Admin (`admin@hospital.in` / `ADMIN_MMCH_01` / `9831000005` · `admin123`)**: Full all-access Admin Panel — verify/approve or reject any pending new registration, switch directly into Doctor/Field/Moderator/Patient portals, inspect all submissions & photos, override decisions, and manage `₹` payouts.
+* **Patient (`patient@demo.in` / `PAT_KGP_01` / `9831000007` · `patient123`)**: View longitudinal wound journey, prescriptions & follow-up status.
 
 See [`Mobile-app-Updated/README.md`](Mobile-app-Updated/README.md) and [`Mobile-app-Updated/play_store_assets/PLAY_STORE_DEPLOYMENT_GUIDE.md`](Mobile-app-Updated/play_store_assets/PLAY_STORE_DEPLOYMENT_GUIDE.md) for full developer & Play Store publishing instructions.
